@@ -337,7 +337,7 @@ void kernel_main() {
                 index_h_offset = 0;
                 reconfig_data_format_srcb(dfb_in0_id, dfb_input_mask_id);
                 // mask input
-                mul_init(dfb_input_id, dfb_input_mask_id);
+                mul_bcast_rows_init(dfb_input_id, dfb_input_mask_id);
                 dfb_x.reserve_back(out_block_hw_normal);
                 for (uint32_t i = 0; i < out_block_h_actual; ++i) {
                     index_subblock_w_offset = 0;
@@ -346,7 +346,7 @@ void kernel_main() {
                         for (uint32_t w = 0; w < subblock_w; ++w) {
                             uint32_t index = w + index_subblock_w_offset + index_h_offset + out_block_base;
                             uint32_t index_mask = w + index_subblock_w_offset;
-                            mul_tiles(dfb_input_id, dfb_input_mask_id, index, index_mask, w);
+                            mul_tiles_bcast_rows(dfb_input_id, dfb_input_mask_id, index, index_mask, w);
                         }
                         tile_regs_commit();
                         tile_regs_wait();
@@ -460,7 +460,7 @@ void kernel_main() {
 
                 // zero out the garbage values by mult mask again
                 reconfig_data_format_srcb(dfb_ex_global_id, dfb_input_mask_id);
-                mul_init(dfb_xmm_id, dfb_input_mask_id);
+                mul_bcast_rows_init(dfb_xmm_id, dfb_input_mask_id);
                 dfb_x.reserve_back(out_block_hw_normal);
                 dfb_xmm.wait_front(out_block_hw_normal);
                 for (uint32_t i = 0; i < out_block_h_actual; i++) {
@@ -470,7 +470,7 @@ void kernel_main() {
                         for (uint32_t w = 0; w < subblock_w; ++w) {
                             uint32_t index = w + index_subblock_w_offset;
                             uint32_t index_mask = index;
-                            mul_tiles(dfb_xmm_id, dfb_input_mask_id, index, index_mask, w);
+                            mul_tiles_bcast_rows(dfb_xmm_id, dfb_input_mask_id, index, index_mask, w);
                         }
                         tile_regs_commit();
                         tile_regs_wait();
@@ -681,7 +681,7 @@ void kernel_main() {
 
                 // zero out the garbage values by mult mask again
                 reconfig_data_format_srcb(dfb_ex_global_id, dfb_input_mask_id);
-                mul_init(dfb_xmm_id, dfb_input_mask_id);
+                mul_bcast_rows_init(dfb_xmm_id, dfb_input_mask_id);
                 dfb_x.reserve_back(out_block_hw_normal);
                 dfb_xmm.wait_front(out_block_hw_normal);
                 for (uint32_t i = 0; i < out_block_h_actual; i++) {
@@ -691,7 +691,7 @@ void kernel_main() {
                         for (uint32_t w = 0; w < subblock_w; ++w) {
                             uint32_t index = w + index_subblock_w_offset;
                             uint32_t index_mask = index;
-                            mul_tiles(dfb_xmm_id, dfb_input_mask_id, index, index_mask, w);
+                            mul_tiles_bcast_rows(dfb_xmm_id, dfb_input_mask_id, index, index_mask, w);
                         }
                         tile_regs_commit();
                         tile_regs_wait();
