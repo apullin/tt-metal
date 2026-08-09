@@ -165,6 +165,7 @@ Tensor all_to_all_async_generic(
     std::optional<uint32_t> cluster_axis) {
     using OperationType = AllToAllAsyncGenericDeviceOperation;
     uint32_t num_devices = ttnn::ccl::get_topological_dimension(input_tensor, cluster_axis);
+    TT_FATAL(num_links > 0, "all_to_all_async requires at least one fabric link");
     TT_FATAL(
         num_devices > 1,
         "all_to_all_async is a collective operation and requires more than 1 device, but has {}",
