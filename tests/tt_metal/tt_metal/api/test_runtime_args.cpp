@@ -37,6 +37,7 @@
 #include "impl/program/program_impl.hpp"
 #include "impl/context/metal_context.hpp"
 #include "impl/kernels/kernel.hpp"
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 using namespace tt;
 using namespace tt::tt_metal;

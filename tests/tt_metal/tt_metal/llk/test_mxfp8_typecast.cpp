@@ -27,6 +27,7 @@
 #include "tt_metal/test_utils/comparison.hpp"
 #include "tt_metal/test_utils/float8_utils.hpp"
 #include "tt_metal/test_utils/mx_utils.hpp"
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 namespace tt::tt_metal {
 

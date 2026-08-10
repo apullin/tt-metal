@@ -48,6 +48,7 @@
 #include <tt-metalium/experimental/tensor/mesh_tensor.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/buffer.hpp>
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 namespace tt::tt_metal {
 class IDevice;

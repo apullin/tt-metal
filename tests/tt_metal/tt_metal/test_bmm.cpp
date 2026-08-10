@@ -20,6 +20,7 @@
 #include <tt-metalium/experimental/tensor/tensor_apis.hpp>
 #include "test_gold_impls.hpp"
 #include "impl/data_format/bfloat16_utils.hpp"
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 using std::vector;
 using namespace tt;

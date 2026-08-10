@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <vector>
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 #ifndef OVERRIDE_KERNEL_PREFIX
 #define OVERRIDE_KERNEL_PREFIX ""
