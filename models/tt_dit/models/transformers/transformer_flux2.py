@@ -15,7 +15,6 @@ from ...blocks.transformer_block_opt import TransformerBlock
 from ...layers.embeddings import CombinedTimestepGuidanceTextProjEmbeddings
 from ...layers.linear import (
     ColParallelLinear,
-    Linear,
     RowParallelLinear,
     prepare_chunked_linear_output,
     prepare_weight_for_concatenated_input,
@@ -295,7 +294,14 @@ class Flux2Transformer(Module):
             ccl_manager=ccl_manager,
         )
 
-        self.proj_out = Linear(inner_dim, out_channels, bias=False, mesh_device=device)
+        self.proj_out = RowParallelLinear(
+            inner_dim,
+            out_channels,
+            bias=False,
+            mesh_device=device,
+            mesh_axis=tp_axis,
+            ccl_manager=ccl_manager,
+        )
 
         self.double_stream_modulation_img = Flux2Modulation(inner_dim, mod_param_sets=2, tp_axis=tp_axis, device=device)
         self.double_stream_modulation_txt = Flux2Modulation(inner_dim, mod_param_sets=2, tp_axis=tp_axis, device=device)
@@ -439,8 +445,4 @@ class Flux2Transformer(Module):
 
         spatial = ttnn.squeeze(self.norm_out(ttnn.unsqueeze(spatial, 0), dynamic_weight=scale, dynamic_bias=shift), 0)
 
-        spatial = self._ccl_manager.all_gather_persistent_buffer(
-            spatial, dim=2, mesh_axis=self._tp_axis, use_hyperparams=True
-        )
-
-        return self.proj_out(spatial)
+        return self.proj_out(spatial, gather_output=True)
