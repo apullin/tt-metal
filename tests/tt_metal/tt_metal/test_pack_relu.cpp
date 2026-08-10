@@ -142,7 +142,7 @@ void PackReluFixture::run_pack_relu_test(uint32_t relu_config, const std::functi
 
     // Stimulus: random bfloat16 in [-1, 1]
     std::vector<uint32_t> src_vec = create_random_vector_of_bfloat16(dram_buffer_size, 1.0f, 0xCAFE);
-    this->WriteBuffer(src_dram_buffer, src_vec);
+    slow_dispatch::WriteToBuffer(*src_dram_buffer, src_vec);
 
     const uint32_t src_aligned_page_size =
         static_cast<uint32_t>(src_dram_buffer->get_reference_buffer()->aligned_page_size());
@@ -179,7 +179,7 @@ void PackReluFixture::run_pack_relu_test(uint32_t relu_config, const std::functi
     tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> result_vec;
-    this->ReadBuffer(dst_dram_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_dram_buffer, result_vec);
 
     // Build golden
     std::vector<uint32_t> golden(src_vec.size());

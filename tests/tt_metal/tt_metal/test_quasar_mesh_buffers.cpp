@@ -11,6 +11,7 @@
 #include <tt-metalium/mesh_buffer.hpp>
 #include <tt-metalium/mesh_event.hpp>
 #include <tt-metalium/host_api.hpp>
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -44,7 +45,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferWriteReadDRAM) {
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
     }
 
-    distributed::MeshCommandQueue& cq = devices_[0]->mesh_command_queue();
+    distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     std::shared_ptr<distributed::MeshBuffer> buf = make_mesh_buffer(BufferType::DRAM, this->device());
 
     std::vector<uint32_t> src(num_elems);
@@ -65,7 +66,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferMultipleWriteReadRoundsDRAM) {
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
     }
 
-    distributed::MeshCommandQueue& cq = devices_[0]->mesh_command_queue();
+    distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     std::shared_ptr<distributed::MeshBuffer> buf = make_mesh_buffer(BufferType::DRAM, this->device());
 
     for (uint32_t round = 0; round < 10; round++) {
@@ -87,7 +88,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferWriteReadL1) {
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
     }
 
-    distributed::MeshCommandQueue& cq = devices_[0]->mesh_command_queue();
+    distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     std::shared_ptr<distributed::MeshBuffer> buf = make_mesh_buffer(BufferType::L1, this->device());
 
     std::vector<uint32_t> src(num_elems);
@@ -108,7 +109,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferMultipleWriteReadRoundsL1) {
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
     }
 
-    distributed::MeshCommandQueue& cq = devices_[0]->mesh_command_queue();
+    distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     std::shared_ptr<distributed::MeshBuffer> buf = make_mesh_buffer(BufferType::L1, this->device());
 
     for (uint32_t round = 0; round < 10; round++) {
@@ -118,7 +119,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferMultipleWriteReadRoundsL1) {
         distributed::EnqueueWriteMeshBuffer(cq, buf, src);
 
         std::vector<uint32_t> dst;
-        this->ReadBuffer(buf, dst);
+        slow_dispatch::ReadFromBuffer(*buf, dst);
 
         ASSERT_EQ(dst, src);
     }
