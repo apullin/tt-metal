@@ -100,6 +100,8 @@ set(HW_JIT_API_HEADERS
     inc/api/compute/eltwise_unary/typecast.h
     inc/api/compute/eltwise_unary/where.h
     inc/api/compute/ema.h
+    inc/api/compute/experimental/compressed_custom_mm.h
+    inc/api/compute/experimental/custom_mm.h
     inc/api/compute/experimental/fast_untilize.h
     inc/api/compute/experimental/mul_reduce_scalar.h
     inc/api/compute/experimental/semaphore.h
