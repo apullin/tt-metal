@@ -120,11 +120,8 @@ inline void _llk_unpack_A_rmsnorm_init_(
     // Set transpose register to prevent state pollution
     cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(within_face_16x16_transpose);
 
-    // TODO NC: Find out why we need to disable src zero flags for uint16 dst format #960
-    // bool disable_src_zero_flag_val = disable_src_zero_flag || (static_cast<uint>(unpack_dst_format) ==
-    // static_cast<uint>(DataFormat::UInt16));
-    // cfg_reg_rmw_tensix<ALU_ACC_CTRL_Zero_Flag_disabled_src_RMW>(disable_src_zero_flag_val ? 1 : 0);
-
+    // Unlike _llk_unpack_A_init_, this variant does not disable src zero flags for UInt16 dst
+    // formats; the rmsnorm consumers are float-only, so that path is deliberately unsupported here.
     constexpr std::uint32_t UNP_SEL = (BType == BroadcastType::NONE) ? p_setadc::UNP_A : p_setadc::UNP_B;
     config_unpacker_x_end<UNP_SEL>(face_r_dim);
 
