@@ -219,6 +219,10 @@ def test_transformer(
     )
     tt_prompt_rope_cos = tensor.from_torch(prompt_rope_cos.unsqueeze(0).unsqueeze(0), device=mesh_device)
     tt_prompt_rope_sin = tensor.from_torch(prompt_rope_sin.unsqueeze(0).unsqueeze(0), device=mesh_device)
+    tt_combined_rope = (
+        ttnn.concat([tt_spatial_rope_cos, tt_prompt_rope_cos], dim=2),
+        ttnn.concat([tt_spatial_rope_sin, tt_prompt_rope_sin], dim=2),
+    )
 
     logger.info("running Torch model...")
     with torch.no_grad():
@@ -241,6 +245,7 @@ def test_transformer(
         guidance=tt_guidance,
         spatial_rope=(tt_spatial_rope_cos, tt_spatial_rope_sin),
         prompt_rope=(tt_prompt_rope_cos, tt_prompt_rope_sin),
+        combined_rope=tt_combined_rope,
         spatial_sequence_length=spatial_seq_len,
         prompt_sequence_length=prompt_seq_len,
     )
@@ -402,6 +407,10 @@ def test_transformer_profile(
     tt_prompt_rope_sin = tensor.from_torch(
         prompt_rope_sin.unsqueeze(0).unsqueeze(0), device=mesh_device, mesh_axes=prompt_rope_mesh_axes
     )
+    tt_combined_rope = (
+        ttnn.concat([tt_spatial_rope_cos, tt_prompt_rope_cos], dim=2),
+        ttnn.concat([tt_spatial_rope_sin, tt_prompt_rope_sin], dim=2),
+    )
 
     # warmup
     tt_model.forward(
@@ -411,6 +420,7 @@ def test_transformer_profile(
         guidance=tt_guidance,
         spatial_rope=(tt_spatial_rope_cos, tt_spatial_rope_sin),
         prompt_rope=(tt_prompt_rope_cos, tt_prompt_rope_sin),
+        combined_rope=tt_combined_rope,
         spatial_sequence_length=spatial_seq_len,
         prompt_sequence_length=prompt_seq_len,
         compute_prompt_output=(xformer_idx in [0, 3]),  # force computing eveything
@@ -424,6 +434,7 @@ def test_transformer_profile(
         guidance=tt_guidance,
         spatial_rope=(tt_spatial_rope_cos, tt_spatial_rope_sin),
         prompt_rope=(tt_prompt_rope_cos, tt_prompt_rope_sin),
+        combined_rope=tt_combined_rope,
         spatial_sequence_length=spatial_seq_len,
         prompt_sequence_length=prompt_seq_len,
         compute_prompt_output=(xformer_idx in [0, 3]),  # force computing eveything

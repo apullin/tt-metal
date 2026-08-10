@@ -377,6 +377,7 @@ class Flux2Transformer(Module):
         guidance: ttnn.Tensor,
         spatial_rope: tuple[ttnn.Tensor, ttnn.Tensor],
         prompt_rope: tuple[ttnn.Tensor, ttnn.Tensor],
+        combined_rope: tuple[ttnn.Tensor, ttnn.Tensor],
         spatial_sequence_length: int,
         prompt_sequence_length: int,
         compute_prompt_output: bool = False,
@@ -390,6 +391,9 @@ class Flux2Transformer(Module):
             guidance: Optional tensor with shape [batch_size, 1].
             spatial_rope: Tuple of two tensors with shape [spatial_sequence_length / sp_factor, head_dim].
             prompt_rope: Tuple of two tensors with shape [prompt_sequence_length, head_dim] (sequence is not sharded!).
+            combined_rope: spatial_rope and prompt_rope concatenated on the sequence dim, for the
+                single blocks. Supplied by the caller rather than built here because it is constant
+                across denoising steps.
             spatial_sequence_length: int.
             prompt_sequence_length: int.
             compute_prompt_output: bool. Whether to compute the prompt output. Final prompt output is typically unused.
@@ -453,9 +457,6 @@ class Flux2Transformer(Module):
 
         # prep pre concatenated data
         spatial_prompt_concat = ttnn.concat([spatial, prompt], dim=1)
-        combined_cos_rope = ttnn.concat([spatial_rope[0], prompt_rope[0]], dim=2)
-        combined_sin_rope = ttnn.concat([spatial_rope[1], prompt_rope[1]], dim=2)
-        combined_rope = (combined_cos_rope, combined_sin_rope)
         spatial_size = spatial.shape[1]
         spatial_prompt_sequence_length = spatial_sequence_length + prompt_sequence_length
         for i, block in enumerate(self.single_transformer_blocks, start=1):

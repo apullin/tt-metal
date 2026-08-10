@@ -45,6 +45,8 @@ class Flux2TransformerState:
         self._tt_spatial_rope_sin = StateTensor()
         self._tt_prompt_rope_cos = StateTensor()
         self._tt_prompt_rope_sin = StateTensor()
+        self._tt_combined_rope_cos = StateTensor()
+        self._tt_combined_rope_sin = StateTensor()
         self._tt_timestep = StateTensor()
         self._tt_sigma_difference = StateTensor()
 
@@ -206,6 +208,14 @@ class Flux2Pipeline:
         )
         self.ts._tt_prompt_rope_sin.update(
             prompt_rope_sin.unsqueeze(0).unsqueeze(0), False, mesh_axes=prompt_rope_mesh_axes, device=self._mesh_device
+        )
+        # The single blocks run on the concatenated [spatial | prompt] sequence and need the matching
+        # rope. It only depends on the ids, so concat once here instead of every denoising step.
+        self.ts._tt_combined_rope_cos.update(
+            ttnn.concat([self.ts.tt_spatial_rope_cos, self.ts.tt_prompt_rope_cos], dim=2), False
+        )
+        self.ts._tt_combined_rope_sin.update(
+            ttnn.concat([self.ts.tt_spatial_rope_sin, self.ts.tt_prompt_rope_sin], dim=2), False
         )
 
         self.warmup(warmup_info="e2e warmup")  # E2E warmup. Preallocate buffers
@@ -403,6 +413,7 @@ class Flux2Pipeline:
                         sigma_difference=self.ts.tt_sigma_difference,
                         spatial_rope=(self.ts.tt_spatial_rope_cos, self.ts.tt_spatial_rope_sin),
                         prompt_rope=(self.ts.tt_prompt_rope_cos, self.ts.tt_prompt_rope_sin),
+                        combined_rope=(self.ts.tt_combined_rope_cos, self.ts.tt_combined_rope_sin),
                         spatial_sequence_length=spatial_sequence_length,
                         prompt_sequence_length=prompt_sequence_length,
                         traced=traced,
@@ -473,6 +484,7 @@ class Flux2Pipeline:
         sigma_difference: ttnn.Tensor,
         spatial_rope: tuple[ttnn.Tensor, ttnn.Tensor],
         prompt_rope: tuple[ttnn.Tensor, ttnn.Tensor],
+        combined_rope: tuple[ttnn.Tensor, ttnn.Tensor],
         spatial_sequence_length: int,
         prompt_sequence_length: int,
     ) -> None:
@@ -483,6 +495,7 @@ class Flux2Pipeline:
             guidance=guidance,
             spatial_rope=spatial_rope,
             prompt_rope=prompt_rope,
+            combined_rope=combined_rope,
             spatial_sequence_length=spatial_sequence_length,
             prompt_sequence_length=prompt_sequence_length,
         )
