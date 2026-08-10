@@ -186,6 +186,7 @@ def test_transformer(
         subfolder="transformer",
         parallel_config=parallel_config,
         mesh_shape=tuple(mesh_device.shape),
+        mesh_device=mesh_device,
     )
 
     spatial_seq_len = height * width // 16**2
