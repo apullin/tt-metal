@@ -179,10 +179,7 @@ static vector<uint32_t> run_mxfp4_typecast(
     };
     experimental::SetProgramRunArgs(program, params);
 
-    distributed::MeshWorkload workload;
-    workload.add_program(distributed::MeshCoordinateRange(distributed::MeshCoordinate(0, 0)), std::move(program));
-    distributed::EnqueueMeshWorkload(mesh_device.mesh_command_queue(), workload, /*blocking=*/false);
-    distributed::Finish(mesh_device.mesh_command_queue());
+    RunProgram(mesh_device, std::move(program));
 
     vector<uint32_t> result_vec;
     slow_dispatch::ReadFromBuffer(*dst_buffer, result_vec);

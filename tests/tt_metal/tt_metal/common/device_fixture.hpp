@@ -170,16 +170,11 @@ protected:
 class MeshDeviceSingleCardBufferFixture : public MeshDeviceSingleCardFixture {};
 
 // Single unit-mesh fixture: always owns exactly one MeshDevice and exposes
-// RunProgram / FinishCommands / WriteBuffer / ReadBuffer overloads that do not take a device arg.
+// FinishCommands / WriteBuffer / ReadBuffer overloads that do not take a device arg.
 class UnitMeshFixture : public MeshDeviceSingleCardFixture {
 public:
     distributed::MeshDevice& device() { return *device_; }
 
-    void RunProgram(Program program, bool skip_finish = false) {
-        distributed::MeshWorkload workload;
-        workload.add_program(distributed::MeshCoordinateRange(distributed::MeshCoordinate(0, 0)), std::move(program));
-        MeshDispatchFixture::RunProgram(device_, workload, skip_finish);
-    }
     void FinishCommands() { MeshDispatchFixture::FinishCommands(device_); }
     void WriteBuffer(const std::shared_ptr<distributed::MeshBuffer>& in_buffer, std::vector<uint32_t>& src_vec) {
         MeshDispatchFixture::WriteBuffer(device_, in_buffer, src_vec);

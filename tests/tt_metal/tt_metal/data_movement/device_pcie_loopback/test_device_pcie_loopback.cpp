@@ -129,7 +129,7 @@ TEST_F(QuasarUnitMeshFixture, HostHugepagePcieLoopback) {
     };
     Program program = experimental::MakeProgramFromSpec(this->device(), spec);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     // Step 5: Host verifies dst hugepage region matches src.
     std::vector<uint32_t> host_dst_readback(expected.size());

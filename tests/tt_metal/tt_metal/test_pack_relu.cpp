@@ -15,6 +15,7 @@
 #include <tt-metalium/distributed.hpp>
 #include <tt-metalium/experimental/metal2_host_api/program.hpp>
 #include "impl/data_format/bfloat16_utils.hpp"
+#include "tt_metal/impl/dispatch/slow_dispatch.hpp"
 
 using namespace tt;
 using namespace tt::tt_metal;
@@ -175,7 +176,7 @@ void PackReluFixture::run_pack_relu_test(uint32_t relu_config, const std::functi
     };
     experimental::SetProgramRunArgs(program, params);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> result_vec;
     this->ReadBuffer(dst_dram_buffer, result_vec);

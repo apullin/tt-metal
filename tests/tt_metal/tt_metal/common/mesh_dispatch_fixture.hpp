@@ -186,4 +186,14 @@ protected:
     void init_max_cbs() { max_cbs_ = tt::tt_metal::MetalContext::instance().hal().get_arch_num_circular_buffers(); }
 };
 
+// Enqueue a Program on a unit mesh at mesh coord (0, 0).
+inline void RunProgram(distributed::MeshDevice& mesh_device, Program program, bool skip_finish = false) {
+    distributed::MeshWorkload workload;
+    workload.add_program(distributed::MeshCoordinateRange{mesh_device.shape()}, std::move(program));
+    distributed::EnqueueMeshWorkload(mesh_device.mesh_command_queue(), workload, false);
+    if (!skip_finish) {
+        distributed::Finish(mesh_device.mesh_command_queue());
+    }
+}
+
 }  // namespace tt::tt_metal

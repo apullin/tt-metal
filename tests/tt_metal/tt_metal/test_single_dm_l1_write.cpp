@@ -82,7 +82,7 @@ TEST_F(QuasarUnitMeshFixture, SingleDmL1Write) {
     std::cout << "Hello, Core {0, 0} on Device 0, Please start execution. I will standby for your communication."
               << std::endl;
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
     slow_dispatch::ReadFromL1(this->device(), node, address, 4, outputs);
 
     ASSERT_EQ(outputs[0], value) << "Got the value " << std::hex << outputs[0] << " instead of " << value;

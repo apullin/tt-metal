@@ -281,7 +281,6 @@ void get_packed_tilized_input_output_pair(
 
 void run_single_core_unary_broadcast_quasar(
     distributed::MeshDevice& mesh_device, const UnaryBroadcastConfig& test_config) {
-    auto* device = mesh_device.get_devices()[0];
     const experimental::NodeCoord node{0, 0};
 
     constexpr uint32_t num_tiles = 32;
@@ -419,7 +418,7 @@ void run_single_core_unary_broadcast_quasar(
         in_t, out_t, num_tiles, test_config.broadcast_dim, packed_tilized_input, golden_packed_tilized_output);
     slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), packed_tilized_input);
 
-    tt_metal::detail::LaunchProgram(device, program, /*wait_until_cores_done=*/true);
+    RunProgram(mesh_device, std::move(program));
 
     std::vector<uint32_t> dest_buffer_data;
     slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), dest_buffer_data);

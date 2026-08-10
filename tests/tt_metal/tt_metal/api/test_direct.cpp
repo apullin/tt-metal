@@ -381,9 +381,8 @@ static bool verify_reader_datacopy_writer_output(const ReaderDatacopyWriterConte
 /// @return
 bool reader_datacopy_writer(distributed::MeshDevice& mesh_device, const ReaderDatacopyWriterConfig& test_config) {
     auto ctx = setup_reader_datacopy_writer_context(mesh_device, test_config);
-    auto* device = mesh_device.get_devices()[0];
 
-    const bool is_quasar = device->arch() == ARCH::QUASAR;
+    const bool is_quasar = mesh_device.arch() == ARCH::QUASAR;
     // On Quasar we can split work across two DM threads when num_tiles > 1;
     // WH/BH gen1 has one DM thread per processor, so the kernel only runs on
     // a single thread there.

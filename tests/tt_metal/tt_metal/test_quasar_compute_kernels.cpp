@@ -77,7 +77,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarComputeKernelMultipleThreads) {
     }};
     experimental::SetProgramRunArgs(program, params);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> actual_values(16, 0);
     slow_dispatch::ReadFromL1(this->device(), node, l1_address, 16 * sizeof(uint32_t), actual_values);
@@ -145,7 +145,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarComputeKernelSingleThread) {
     }};
     experimental::SetProgramRunArgs(program, params);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> actual_values(4, 0);
     slow_dispatch::ReadFromL1(this->device(), node, l1_address, 4 * sizeof(uint32_t), actual_values);

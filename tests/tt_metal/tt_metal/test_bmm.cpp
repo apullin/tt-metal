@@ -333,7 +333,7 @@ TEST_F(QuasarUnitMeshFixture, BmmMultinode) {
     slow_dispatch::WriteToBuffer(tensors.src0.mesh_buffer(), src0_vec);
     slow_dispatch::WriteToBuffer(tensors.src1.mesh_buffer(), src1_vec);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> result_vec;
     slow_dispatch::ReadFromBuffer(tensors.dst.mesh_buffer(), result_vec);

@@ -147,7 +147,7 @@ TEST_F(QuasarUnitMeshFixture, DmLoopback) {
     }
     experimental::SetProgramRunArgs(program, params);
 
-    this->RunProgram(std::move(program));
+    tt_metal::RunProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> outputs{0};
     slow_dispatch::ReadFromDRAMChannel(this->device(), 0, dram_address, sizeof(uint32_t), outputs);
