@@ -739,7 +739,7 @@ void run_single_core_unpack_tilizeA_B_reduce_program(
     auto& program_ = workload.get_programs().at(device_range);
 
     std::vector<std::uint32_t> src0_vec = create_random_vector_of_bfloat16(input_dram_buffer_size, 100, 42);
-    tt_metal::slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), src0_vec);
+    slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), src0_vec);
 
     float scaler_f = 1.0f;
     std::vector<std::uint32_t> scaler_tile_vec = create_constant_vector_of_bfloat16(scaler_tile_size, scaler_f);
@@ -767,7 +767,7 @@ void run_single_core_unpack_tilizeA_B_reduce_program(
     distributed::Finish(cq);
 
     std::vector<std::uint32_t> result_vec;
-    tt_metal::slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
+    slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
 
     validate_result(test_config, src0_vec, scaler_tile_vec, result_vec);
 }

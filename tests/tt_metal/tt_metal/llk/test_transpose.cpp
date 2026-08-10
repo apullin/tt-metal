@@ -356,13 +356,13 @@ void run_single_core_transpose(distributed::MeshDevice& mesh_device, const Trans
     } else {
         src_vec = create_random_vector_of_bfloat16(dram_buffer_size, 100.0f, kRandomSeed);
     }
-    tt_metal::slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), src_vec);
+    slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), src_vec);
 
     distributed::EnqueueMeshWorkload(cq, workload, false);
     distributed::Finish(cq);
 
     std::vector<uint32_t> result_vec;
-    tt_metal::slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
+    slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
 
     const std::uint32_t bytes_per_elem = tt::datum_size(test_config.data_format);
     EXPECT_EQ(result_vec.size(), (dims.NC * dims.H * dims.W * bytes_per_elem) / sizeof(uint32_t));

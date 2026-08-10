@@ -358,7 +358,7 @@ static ReaderDatacopyWriterContext setup_reader_datacopy_writer_context(
 
     ctx.inputs = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
         -1.0f, 1.0f, ctx.byte_size / sizeof(bfloat16), std::chrono::system_clock::now().time_since_epoch().count());
-    tt_metal::slow_dispatch::WriteToBuffer(*ctx.input_dram_buffer, ctx.inputs);
+    slow_dispatch::WriteToBuffer(*ctx.input_dram_buffer, ctx.inputs);
 
     // DRAM buffer uses page_size = byte_size (whole-buffer), so derive the
     // per-tile DRAM stride directly from byte_size / num_tiles.
@@ -369,7 +369,7 @@ static ReaderDatacopyWriterContext setup_reader_datacopy_writer_context(
 
 static bool verify_reader_datacopy_writer_output(const ReaderDatacopyWriterContext& ctx) {
     std::vector<uint32_t> dest_buffer_data;
-    tt_metal::slow_dispatch::ReadFromBuffer(*ctx.output_dram_buffer, dest_buffer_data);
+    slow_dispatch::ReadFromBuffer(*ctx.output_dram_buffer, dest_buffer_data);
     return ctx.inputs == dest_buffer_data;
 }
 

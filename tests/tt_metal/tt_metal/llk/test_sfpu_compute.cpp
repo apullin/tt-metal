@@ -846,12 +846,12 @@ std::vector<uint32_t> run_sfpu_pipeline(
     };
     experimental::SetProgramRunArgs(program_run, params);
 
-    tt_metal::slow_dispatch::WriteToBuffer(*input_dram_buffer, packed_input);
+    slow_dispatch::WriteToBuffer(*input_dram_buffer, packed_input);
     distributed::EnqueueMeshWorkload(cq, workload, false);
     distributed::Finish(cq);
 
     std::vector<uint32_t> dest_buffer_data;
-    tt_metal::slow_dispatch::ReadFromBuffer(*output_dram_buffer, dest_buffer_data);
+    slow_dispatch::ReadFromBuffer(*output_dram_buffer, dest_buffer_data);
     return dest_buffer_data;
 }
 

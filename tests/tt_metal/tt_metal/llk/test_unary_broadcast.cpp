@@ -417,12 +417,12 @@ void run_single_core_unary_broadcast_quasar(
     std::vector<uint32_t> golden_packed_tilized_output;
     get_packed_tilized_input_output_pair(
         in_t, out_t, num_tiles, test_config.broadcast_dim, packed_tilized_input, golden_packed_tilized_output);
-    tt_metal::slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), packed_tilized_input);
+    slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), packed_tilized_input);
 
     tt_metal::detail::LaunchProgram(device, program, /*wait_until_cores_done=*/true);
 
     std::vector<uint32_t> dest_buffer_data;
-    tt_metal::slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), dest_buffer_data);
+    slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), dest_buffer_data);
 
     ASSERT_TRUE(check_is_close(golden_packed_tilized_output, dest_buffer_data, out_t, "unary_broadcast_dram_out"));
 }
