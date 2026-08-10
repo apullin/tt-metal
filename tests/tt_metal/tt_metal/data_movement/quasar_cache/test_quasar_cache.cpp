@@ -45,7 +45,7 @@ bool run_l2_flush_test(
     // that should persist after invalidation (since invalidate doesn't write back)
     uint32_t old_value = 0xDEADBEEF;
     std::vector<uint32_t> init_data(config.num_words, config.expect_new_values ? 0 : old_value);
-    detail::WriteToL1(mesh_device, core, config.base_addr, init_data);
+    slow_dispatch::WriteToL1(mesh_device, core, config.base_addr, init_data);
 
     const experimental::KernelSpecName DM_KERNEL{"l2_flush"};
 
@@ -92,7 +92,7 @@ bool run_l2_flush_test(
 
     // Read back and verify
     std::vector<uint32_t> output_data;
-    detail::ReadFromL1(mesh_device, core, config.base_addr, config.num_words * sizeof(uint32_t), output_data);
+    slow_dispatch::ReadFromL1(mesh_device, core, config.base_addr, config.num_words * sizeof(uint32_t), output_data);
 
     bool pass = true;
     for (uint32_t i = 0; i < config.num_words; i++) {
@@ -128,7 +128,7 @@ bool run_l1_dcache_test(
     // that should persist after invalidation (since invalidate doesn't write back)
     uint32_t old_value = 0xDEADBEEF;
     std::vector<uint32_t> init_data(config.num_words, old_value);
-    detail::WriteToL1(mesh_device, core, config.base_addr, init_data);
+    slow_dispatch::WriteToL1(mesh_device, core, config.base_addr, init_data);
 
     const experimental::KernelSpecName DM_KERNEL{"l1_dcache"};
 
@@ -175,7 +175,7 @@ bool run_l1_dcache_test(
 
     // Read back and verify
     std::vector<uint32_t> output_data;
-    detail::ReadFromL1(mesh_device, core, config.base_addr, config.num_words * sizeof(uint32_t), output_data);
+    slow_dispatch::ReadFromL1(mesh_device, core, config.base_addr, config.num_words * sizeof(uint32_t), output_data);
 
     bool pass = true;
     for (uint32_t i = 0; i < config.num_words; i++) {

@@ -151,7 +151,7 @@ static vector<uint32_t> run_mxfp8_typecast(
 
     Program program = experimental::MakeProgramFromSpec(mesh_device, spec);
 
-    detail::WriteToBuffer(*src_buffer, src_vec);
+    slow_dispatch::WriteToBuffer(*src_buffer, src_vec);
     // Pass aligned DRAM page stride so the reader/writer advance the DRAM
     // pointer by the allocator's aligned_page_size while the DFB streams the
     // native tile size (e.g. 1056 bytes for MxFp8 on Quasar; the allocator
@@ -189,7 +189,7 @@ static vector<uint32_t> run_mxfp8_typecast(
     distributed::Finish(mesh_device.mesh_command_queue());
 
     vector<uint32_t> result_vec;
-    detail::ReadFromBuffer(*dst_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_buffer, result_vec);
     return result_vec;
 }
 

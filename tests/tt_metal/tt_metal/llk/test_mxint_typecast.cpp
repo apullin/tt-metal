@@ -135,7 +135,7 @@ static vector<uint32_t> run_mxint_typecast(
 
     Program program = experimental::MakeProgramFromSpec(mesh_device, spec);
 
-    detail::WriteToBuffer(*src_buffer, src_vec);
+    slow_dispatch::WriteToBuffer(*src_buffer, src_vec);
     // These simple test kernels take an explicit bank id and linear address,
     // so keep each buffer as one DRAM page and walk tiles contiguously within
     // bank 0 instead of using interleaved per-tile pages.
@@ -172,7 +172,7 @@ static vector<uint32_t> run_mxint_typecast(
     distributed::Finish(mesh_device.mesh_command_queue());
 
     vector<uint32_t> result_vec;
-    detail::ReadFromBuffer(*dst_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_buffer, result_vec);
     return result_vec;
 }
 

@@ -63,7 +63,7 @@ void run_cross_cq_handoff(distributed::MeshDevice& mesh_device, uint8_t producer
     const uint32_t consumer_value = 0x2c110000u | consumer_cq;
 
     std::vector<uint32_t> zeros(2, 0);
-    detail::WriteToL1(mesh_device, node, producer_address, zeros);
+    slow_dispatch::WriteToL1(mesh_device, node, producer_address, zeros);
 
     distributed::MeshCommandQueue& producer = mesh_device.mesh_command_queue(producer_cq);
     distributed::MeshCommandQueue& consumer = mesh_device.mesh_command_queue(consumer_cq);
@@ -83,11 +83,11 @@ void run_cross_cq_handoff(distributed::MeshDevice& mesh_device, uint8_t producer
     distributed::Finish(consumer);
 
     std::vector<uint32_t> producer_out(1, 0);
-    detail::ReadFromL1(mesh_device, node, producer_address, sizeof(uint32_t), producer_out);
+    slow_dispatch::ReadFromL1(mesh_device, node, producer_address, sizeof(uint32_t), producer_out);
     ASSERT_EQ(producer_out[0], producer_value);
 
     std::vector<uint32_t> consumer_out(1, 0);
-    detail::ReadFromL1(mesh_device, node, consumer_address, sizeof(uint32_t), consumer_out);
+    slow_dispatch::ReadFromL1(mesh_device, node, consumer_address, sizeof(uint32_t), consumer_out);
     ASSERT_EQ(consumer_out[0], consumer_value);
 }
 
@@ -104,7 +104,7 @@ TEST_F(QuasarUnitMeshFixture, EventSynchronize) {
     const uint32_t value = 0x12abcd34;
 
     std::vector<uint32_t> zeros(1, 0);
-    detail::WriteToL1(this->device(), node, address, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, address, zeros);
 
     distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     distributed::MeshWorkload workload = make_l1_write_workload(this->device(), node, address, value, "cq_kernel");
@@ -115,7 +115,7 @@ TEST_F(QuasarUnitMeshFixture, EventSynchronize) {
     distributed::EventSynchronize(event);
 
     std::vector<uint32_t> outputs(1, 0);
-    detail::ReadFromL1(this->device(), node, address, sizeof(uint32_t), outputs);
+    slow_dispatch::ReadFromL1(this->device(), node, address, sizeof(uint32_t), outputs);
     ASSERT_EQ(outputs[0], value);
 }
 
@@ -150,7 +150,7 @@ TEST_F(QuasarUnitMeshFixture, EventBetweenWorkloads) {
     const uint32_t value_2 = 0xccdd3344;
 
     std::vector<uint32_t> zeros(2, 0);
-    detail::WriteToL1(this->device(), node, address_1, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, address_1, zeros);
 
     distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
 
@@ -166,14 +166,14 @@ TEST_F(QuasarUnitMeshFixture, EventBetweenWorkloads) {
     distributed::EventSynchronize(event_after_wl1);
 
     std::vector<uint32_t> out_1(1, 0);
-    detail::ReadFromL1(this->device(), node, address_1, sizeof(uint32_t), out_1);
+    slow_dispatch::ReadFromL1(this->device(), node, address_1, sizeof(uint32_t), out_1);
     ASSERT_EQ(out_1[0], value_1);
 
     // Drain the remaining wl2.
     distributed::Finish(cq);
 
     std::vector<uint32_t> out_2(1, 0);
-    detail::ReadFromL1(this->device(), node, address_2, sizeof(uint32_t), out_2);
+    slow_dispatch::ReadFromL1(this->device(), node, address_2, sizeof(uint32_t), out_2);
     ASSERT_EQ(out_2[0], value_2);
 }
 
@@ -210,7 +210,7 @@ TEST_F(QuasarMultiCQUnitMeshFixture, RecordEventToHostFromBothCQs) {
     const uint32_t value_1 = 0x2c2c0001;
 
     std::vector<uint32_t> zeros(2, 0);
-    detail::WriteToL1(this->device(), node, address_0, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, address_0, zeros);
 
     distributed::MeshCommandQueue& cq0 = this->device().mesh_command_queue(0);
     distributed::MeshCommandQueue& cq1 = this->device().mesh_command_queue(1);
@@ -229,10 +229,10 @@ TEST_F(QuasarMultiCQUnitMeshFixture, RecordEventToHostFromBothCQs) {
     distributed::EventSynchronize(event_1);
 
     std::vector<uint32_t> out_0(1, 0);
-    detail::ReadFromL1(this->device(), node, address_0, sizeof(uint32_t), out_0);
+    slow_dispatch::ReadFromL1(this->device(), node, address_0, sizeof(uint32_t), out_0);
     ASSERT_EQ(out_0[0], value_0);
 
     std::vector<uint32_t> out_1(1, 0);
-    detail::ReadFromL1(this->device(), node, address_1, sizeof(uint32_t), out_1);
+    slow_dispatch::ReadFromL1(this->device(), node, address_1, sizeof(uint32_t), out_1);
     ASSERT_EQ(out_1[0], value_1);
 }

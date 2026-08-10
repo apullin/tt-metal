@@ -449,7 +449,7 @@ void verify_quasar_crtas(
         uint32_t crta_addr = results_base + ((kCommonRTASeparation + physical_dm_id * num_crtas) * sizeof(uint32_t));
 
         std::vector<uint32_t> observed;
-        detail::ReadFromL1(mesh_device, core, crta_addr, num_crtas * sizeof(uint32_t), observed);
+        slow_dispatch::ReadFromL1(mesh_device, core, crta_addr, num_crtas * sizeof(uint32_t), observed);
 
         for (size_t j = 0; j < num_crtas; j++) {
             EXPECT_EQ(observed[j], expected_crtas[j]) << "DM" << physical_dm_id << " CRTA[" << j << "]";
@@ -461,7 +461,7 @@ void verify_quasar_crtas(
         uint32_t physical_dm_id = kQuasarFirstUserDm + user_dm_idx;
         uint32_t addr_offset = addr_base + (physical_dm_id * sizeof(uint32_t));
         std::vector<uint32_t> addr;
-        detail::ReadFromL1(mesh_device, core, addr_offset, sizeof(uint32_t), addr);
+        slow_dispatch::ReadFromL1(mesh_device, core, addr_offset, sizeof(uint32_t), addr);
         crta_addrs.push_back(addr[0]);
     }
 
@@ -1126,7 +1126,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarMergeProgramRunArgs) {
 
     // Zero-init both output slots.
     std::vector<uint32_t> zeros(2, 0);
-    detail::WriteToL1(this->device(), node, address_1, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, address_1, zeros);
 
     // Two kernels, each using one DM thread, writing to distinct L1 addresses.
     const experimental::KernelSpecName K1{"k1"}, K2{"k2"};
@@ -1166,7 +1166,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarMergeProgramRunArgs) {
     this->RunProgram(std::move(program));
 
     std::vector<uint32_t> out(2, 0);
-    detail::ReadFromL1(this->device(), node, address_1, 2 * sizeof(uint32_t), out);
+    slow_dispatch::ReadFromL1(this->device(), node, address_1, 2 * sizeof(uint32_t), out);
     ASSERT_EQ(out, std::vector<uint32_t>({value_1, value_2}));
 }
 
@@ -1202,7 +1202,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarUpdateProgramRunArgs) {
     Program& prog = workload.get_programs().at(device_range);
 
     std::vector<uint32_t> zeros(2, 0);
-    detail::WriteToL1(this->device(), node, address_1, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, address_1, zeros);
 
     // First enqueue: write value_1 to address_1.
     experimental::ProgramRunArgs params1;
@@ -1225,7 +1225,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarUpdateProgramRunArgs) {
     distributed::EnqueueMeshWorkload(cq, workload, true);
 
     std::vector<uint32_t> outputs(2, 0);
-    detail::ReadFromL1(this->device(), node, address_1, 2 * sizeof(uint32_t), outputs);
+    slow_dispatch::ReadFromL1(this->device(), node, address_1, 2 * sizeof(uint32_t), outputs);
     ASSERT_EQ(outputs, std::vector<uint32_t>({value_1, value_2}));
 }
 

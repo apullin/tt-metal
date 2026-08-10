@@ -152,7 +152,7 @@ static vector<uint32_t> run_mxfp6_typecast(
 
     Program program = experimental::MakeProgramFromSpec(mesh_device, spec);
 
-    detail::WriteToBuffer(*src_buffer, src_vec);
+    slow_dispatch::WriteToBuffer(*src_buffer, src_vec);
     uint32_t src_dram_stride = static_cast<uint32_t>(src_buffer->get_reference_buffer()->aligned_page_size());
     uint32_t dst_dram_stride = static_cast<uint32_t>(dst_buffer->get_reference_buffer()->aligned_page_size());
 
@@ -186,7 +186,7 @@ static vector<uint32_t> run_mxfp6_typecast(
     distributed::Finish(mesh_device.mesh_command_queue());
 
     vector<uint32_t> result_vec;
-    detail::ReadFromBuffer(*dst_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_buffer, result_vec);
     return result_vec;
 }
 

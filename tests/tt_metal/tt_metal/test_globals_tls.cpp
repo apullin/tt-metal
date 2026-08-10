@@ -46,7 +46,7 @@ TEST_F(QuasarUnitMeshFixture, GlobalsAndTLS) {
     // Initialize L1 signal so hart FIRST_USER_DM (2) can proceed first; the simple_tls_check
     // kernel chains the signal forward (signal_addr := hartid + 1) so hartids 2..7 run in order.
     std::vector<uint32_t> init_signal = {FIRST_USER_DM};
-    detail::WriteToL1(
+    slow_dispatch::WriteToL1(
         this->device(),
         core,
         signal_address,
@@ -121,7 +121,7 @@ TEST_F(QuasarUnitMeshFixture, GlobalsAndTLS) {
     this->RunProgram(std::move(program));
 
     std::vector<uint32_t> dram_data;
-    detail::ReadFromDRAMChannel(this->device(), dram_channel, dram_address, TOTAL_RESULT_BYTES, dram_data);
+    slow_dispatch::ReadFromDRAMChannel(this->device(), dram_channel, dram_address, TOTAL_RESULT_BYTES, dram_data);
 
     // Reference global addresses: DM 2-4 share one binary, DM 5-6 share another, DM 7 alone.
     auto slot_global_addr = [&dram_data](uint32_t dm) {
@@ -279,7 +279,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarComputeKernelTLS) {
     constexpr uint32_t total_result_bytes = NUM_COMPUTE_SLOTS * TLS_CHECK_RESULT_SLOT_BYTES;
 
     std::vector<uint32_t> init_signal = {QUASAR_FIRST_COMPUTE_HARTID};
-    detail::WriteToL1(
+    slow_dispatch::WriteToL1(
         this->device(),
         core,
         signal_address,
@@ -287,7 +287,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarComputeKernelTLS) {
         CoreType::WORKER);
 
     std::vector<uint32_t> init_data(total_result_bytes / sizeof(uint32_t), 0);
-    detail::WriteToL1(
+    slow_dispatch::WriteToL1(
         this->device(),
         core,
         l1_result_addr,
@@ -334,7 +334,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarComputeKernelTLS) {
     this->RunProgram(std::move(program));
 
     std::vector<uint32_t> l1_data;
-    detail::ReadFromL1(this->device(), core, l1_result_addr, total_result_bytes, l1_data, CoreType::WORKER);
+    slow_dispatch::ReadFromL1(this->device(), core, l1_result_addr, total_result_bytes, l1_data, CoreType::WORKER);
 
     auto slot_global_addr = [&l1_data](uint32_t slot) {
         const uint32_t offset = slot * TLS_CHECK_RESULT_SLOT_WORDS;

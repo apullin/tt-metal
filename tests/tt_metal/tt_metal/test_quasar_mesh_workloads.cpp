@@ -124,7 +124,7 @@ TEST_F(QuasarUnitMeshFixture, TestSingleWorkloadNonBlockingEnqueueFinish) {
     const uint32_t dm_base_value = 0xdead0000;
 
     std::vector<uint32_t> zeros(kWorkloadOutputCount, 0);
-    detail::WriteToL1(this->device(), node, base_address, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, base_address, zeros);
 
     distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     distributed::MeshWorkload workload =
@@ -134,13 +134,13 @@ TEST_F(QuasarUnitMeshFixture, TestSingleWorkloadNonBlockingEnqueueFinish) {
     distributed::Finish(cq);
 
     std::vector<uint32_t> dm_output(kNumUserDMThreads, 0);
-    detail::ReadFromL1(this->device(), node, dm_base_address, kNumUserDMThreads * sizeof(uint32_t), dm_output);
+    slow_dispatch::ReadFromL1(this->device(), node, dm_base_address, kNumUserDMThreads * sizeof(uint32_t), dm_output);
     for (uint32_t i = 0; i < kNumUserDMThreads; i++) {
         ASSERT_EQ(dm_output[i], dm_base_value + i);
     }
 
     std::vector<uint32_t> compute_output(kNumComputeNEOs * kNumTRISCsPerNEO, 0);
-    detail::ReadFromL1(
+    slow_dispatch::ReadFromL1(
         this->device(), node, compute_address, kNumComputeNEOs * kNumTRISCsPerNEO * sizeof(uint32_t), compute_output);
     ASSERT_EQ(compute_output, kExpectedComputeValues);
 }
@@ -165,7 +165,7 @@ TEST_F(QuasarUnitMeshFixture, TestMultipleWorkloadsNonBlockingEnqueueFinish) {
     auto compute_addr_for = [&](uint32_t w) { return dm_base_addr_for(w) + kL1CacheLineBytes; };
 
     std::vector<uint32_t> zeros(kNumWorkloads * 2 * kL1CacheLineBytes / sizeof(uint32_t), 0);
-    detail::WriteToL1(this->device(), node, base_address, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, base_address, zeros);
 
     distributed::MeshCommandQueue& cq = this->device().mesh_command_queue();
     std::vector<distributed::MeshWorkload> workloads;
@@ -186,13 +186,13 @@ TEST_F(QuasarUnitMeshFixture, TestMultipleWorkloadsNonBlockingEnqueueFinish) {
         const uint32_t compute_addr = compute_addr_for(w);
 
         std::vector<uint32_t> dm_output(kNumUserDMThreads, 0);
-        detail::ReadFromL1(this->device(), node, dm_base_addr, kNumUserDMThreads * sizeof(uint32_t), dm_output);
+        slow_dispatch::ReadFromL1(this->device(), node, dm_base_addr, kNumUserDMThreads * sizeof(uint32_t), dm_output);
         for (uint32_t i = 0; i < kNumUserDMThreads; i++) {
             EXPECT_EQ(dm_output[i], dm_base_values[w] + i);
         }
 
         std::vector<uint32_t> compute_output(kNumComputeNEOs * kNumTRISCsPerNEO, 0);
-        detail::ReadFromL1(
+        slow_dispatch::ReadFromL1(
             this->device(), node, compute_addr, kNumComputeNEOs * kNumTRISCsPerNEO * sizeof(uint32_t), compute_output);
         EXPECT_EQ(compute_output, kExpectedComputeValues);
     }
@@ -220,7 +220,7 @@ TEST_F(QuasarMultiCQUnitMeshFixture, TestInterleavedWorkloadsAcrossTwoCQs) {
     auto compute_addr_for = [&](uint32_t w) { return dm_base_addr_for(w) + kL1CacheLineBytes; };
 
     std::vector<uint32_t> zeros(num_workloads * 2 * kL1CacheLineBytes / sizeof(uint32_t), 0);
-    detail::WriteToL1(this->device(), node, base_address, zeros);
+    slow_dispatch::WriteToL1(this->device(), node, base_address, zeros);
 
     distributed::MeshCommandQueue& cq0 = this->device().mesh_command_queue(0);
     distributed::MeshCommandQueue& cq1 = this->device().mesh_command_queue(1);
@@ -243,13 +243,13 @@ TEST_F(QuasarMultiCQUnitMeshFixture, TestInterleavedWorkloadsAcrossTwoCQs) {
         const uint32_t compute_addr = compute_addr_for(w);
 
         std::vector<uint32_t> dm_output(kNumUserDMThreads, 0);
-        detail::ReadFromL1(this->device(), node, dm_base_addr, kNumUserDMThreads * sizeof(uint32_t), dm_output);
+        slow_dispatch::ReadFromL1(this->device(), node, dm_base_addr, kNumUserDMThreads * sizeof(uint32_t), dm_output);
         for (uint32_t i = 0; i < kNumUserDMThreads; i++) {
             EXPECT_EQ(dm_output[i], dm_base_value_for(w) + i);
         }
 
         std::vector<uint32_t> compute_output(kNumComputeNEOs * kNumTRISCsPerNEO, 0);
-        detail::ReadFromL1(
+        slow_dispatch::ReadFromL1(
             this->device(), node, compute_addr, kNumComputeNEOs * kNumTRISCsPerNEO * sizeof(uint32_t), compute_output);
         EXPECT_EQ(compute_output, kExpectedComputeValues);
     }

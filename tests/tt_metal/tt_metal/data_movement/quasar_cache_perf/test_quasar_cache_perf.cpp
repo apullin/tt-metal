@@ -36,7 +36,7 @@ bool run_cache_write(distributed::MeshDevice& mesh_device, std::uint32_t size_by
 
     // Pre-fill destination with a sentinel so a no-op run fails the read-back.
     std::vector<std::uint32_t> init_data((size_bytes + 3) / 4, 0xA5A5A5A5);
-    detail::WriteToL1(mesh_device, core, BASE_ADDR, init_data);
+    slow_dispatch::WriteToL1(mesh_device, core, BASE_ADDR, init_data);
 
     const experimental::KernelSpecName DM_KERNEL{"cache_write_perf"};
     experimental::KernelSpec dm_kernel_spec{
@@ -72,7 +72,7 @@ bool run_cache_write(distributed::MeshDevice& mesh_device, std::uint32_t size_by
     distributed::EnqueueMeshWorkload(mesh_device.mesh_command_queue(), workload, /*blocking=*/true);
 
     std::vector<std::uint32_t> out;
-    detail::ReadFromL1(mesh_device, core, BASE_ADDR, ((size_bytes + 3) / 4) * 4, out);
+    slow_dispatch::ReadFromL1(mesh_device, core, BASE_ADDR, ((size_bytes + 3) / 4) * 4, out);
     const std::uint8_t* bytes = reinterpret_cast<const std::uint8_t*>(out.data());
     for (std::uint32_t i = 0; i < size_bytes; i++) {
         if (bytes[i] != 0x5A) {

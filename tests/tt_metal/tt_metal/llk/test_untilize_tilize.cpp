@@ -738,7 +738,7 @@ void run_single_core_unpack_tilizeA_B_reduce_program(
     auto& program_ = workload.get_programs().at(device_range);
 
     std::vector<std::uint32_t> src0_vec = create_random_vector_of_bfloat16(input_dram_buffer_size, 100, 42);
-    tt_metal::detail::WriteToBuffer(in_tensor.mesh_buffer(), src0_vec);
+    tt_metal::slow_dispatch::WriteToBuffer(in_tensor.mesh_buffer(), src0_vec);
 
     float scaler_f = 1.0f;
     std::vector<std::uint32_t> scaler_tile_vec = create_constant_vector_of_bfloat16(scaler_tile_size, scaler_f);
@@ -766,7 +766,7 @@ void run_single_core_unpack_tilizeA_B_reduce_program(
     distributed::Finish(cq);
 
     std::vector<std::uint32_t> result_vec;
-    tt_metal::detail::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
+    tt_metal::slow_dispatch::ReadFromBuffer(out_tensor.mesh_buffer(), result_vec);
 
     validate_result(test_config, src0_vec, scaler_tile_vec, result_vec);
 }
@@ -1136,7 +1136,7 @@ static void run_quasar_tilize_untilize_test(
     } else {
         src_vec = create_arange_vector_of_bfloat16(src_dram_buffer_size, false);
     }
-    detail::WriteToBuffer(*src_dram_buffer, src_vec);
+    slow_dispatch::WriteToBuffer(*src_dram_buffer, src_vec);
 
     // This test configures the DRAM buffers as a single whole-buffer page, so
     // aligned_page_size() returns the whole-buffer stride rather than per-tile.
@@ -1172,7 +1172,7 @@ static void run_quasar_tilize_untilize_test(
     distributed::Finish(cq);
 
     std::vector<std::uint32_t> result_vec;
-    detail::ReadFromBuffer(*dst_dram_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_dram_buffer, result_vec);
 
     ::unit_tests::compute::GoldenConfig golden_config = {
         .num_tiles_r_dim = static_cast<int>(num_tiles_r),
