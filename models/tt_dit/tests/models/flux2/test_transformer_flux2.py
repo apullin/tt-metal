@@ -75,6 +75,9 @@ def test_modulation(mesh_device: ttnn.MeshDevice) -> None:
     with torch.no_grad():
         out = torch_model.forward(inp)
     out = [o2 for o1 in out for o2 in o1]  # flatten
+    # Flux2Modulation folds the consumers' `1 + scale` into its bias, so its scale outputs (index 1
+    # of each (shift, scale, gate) triple) are one greater than the reference's.
+    out = [o + 1 if i % 3 == 1 else o for i, o in enumerate(out)]
 
     logger.info("running TT model...")
     tt_out = tt_model.forward(tt_inp)
