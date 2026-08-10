@@ -263,7 +263,6 @@ class GroupNorm:
         tt_output_tensor = ttnn.group_norm(
             input_tensor,
             num_groups=self.num_groups,
-            synthesize_negative_mask=negative_mask,
             weight=gamma_t,
             bias=beta_t,
             memory_config=sharded_mem_config,
