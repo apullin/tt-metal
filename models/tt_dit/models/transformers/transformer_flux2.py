@@ -436,7 +436,7 @@ class Flux2Transformer(Module):
             # if i % 6 == 0:
             #     ttnn.ReadDeviceProfiler(spatial.device())
 
-        spatial = spatial_prompt_concat if compute_prompt_output else spatial_prompt_concat[:, :spatial_size, :]
+        spatial = spatial_prompt_concat if compute_prompt_output else spatial_prompt_concat  # [:, :spatial_size, :]
 
         time_embed_proj = self.time_embed_out(time_embed)
         [scale, shift] = ttnn.chunk(time_embed_proj, 2, dim=-1)
