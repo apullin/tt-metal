@@ -104,6 +104,17 @@ BOTH the measured chunk and the cache by SP/8; cache must stay a whole chunk mul
 DS_PERF_SCENARIO / DS_PERF_ATTN_MODE remain as the module-level defaults used for mesh-shape detection,
 but the test itself sweeps the full matrix via parametrization.
 
+Overlap qualification is explicit: set DS_PERF_OVERLAP_PROFILE to qb2_80_30, loudbox_80_40, or
+galaxy_80_40. This restricts the useful matrix to GLM-5.2 sparse cases, selects the corresponding SP×TP
+mesh, and records whole-forward completion-event samples plus the exact ownership split and resolved
+gather worker tier in the manifest. First run the same named profile with DS_PERF_OVERLAP_ENABLED=0 to
+obtain an apples-to-apples serial completion-event baseline on the same mesh; then run enabled with that
+result in DS_PERF_OVERLAP_BASELINE_NS to enforce DS_PERF_OVERLAP_MIN_IMPROVEMENT (default 10%). Completion
+events are deliberate here: the current realtime transport has one dispatch timestamp slot and can drop
+one of two concurrent sub-device records, making its per-op sum invalid for an overlapped forward.
+LoudBox/Galaxy qualification also requires DS_PERF_FIRMWARE_VERSION; it is copied verbatim into the
+manifest rather than guessed from source or silently omitted.
+
 NOTE: warm/long leave both block-cyclic caches at zero init rather than warming with real chunks — only
 op shapes/timing matter here, not values, and those come from the full `total` prefix width (allocation),
 not the cache contents; cold instead runs real chunk forwards that fill the caches. The indexer rope
@@ -116,6 +127,8 @@ import csv
 import datetime
 import json
 import os
+import statistics
+import time
 from dataclasses import dataclass
 
 import pandas as pd
@@ -179,6 +192,23 @@ RT_RECORD_TIMEOUT_S = float(os.environ.get("DS_PERF_RT_TIMEOUT", 30.0))
 # attribution (parse_percall) needs. Off by default (the summary CSVs are the normal output).
 RT_OPS_DUMP = os.environ.get("DS_PERF_RT_OPS_DUMP", "") not in ("", "0", "false")
 
+# Explicit rollout/qualification mode. Empty keeps the historical serial perf matrix. A named profile
+# restricts the matrix to GLM-5.2 sparse MLA and switches whole-forward timing to a completion event:
+# the realtime profiler currently has one dispatch timestamp slot and can drop one of two concurrent
+# sub-device programs, so summing its records would under-report an overlapped forward.
+OVERLAP_PROFILE = os.environ.get("DS_PERF_OVERLAP_PROFILE", "").strip().lower() or None
+OVERLAP_ENABLED = OVERLAP_PROFILE is not None and os.environ.get("DS_PERF_OVERLAP_ENABLED", "1").lower() not in (
+    "0",
+    "false",
+    "off",
+)
+OVERLAP_EVENT_SAMPLES = int(os.environ.get("DS_PERF_OVERLAP_SAMPLES", 5))
+OVERLAP_BASELINE_NS = float(os.environ.get("DS_PERF_OVERLAP_BASELINE_NS", 0.0)) or None
+OVERLAP_MIN_IMPROVEMENT = float(os.environ.get("DS_PERF_OVERLAP_MIN_IMPROVEMENT", 0.10))
+QUALIFICATION_FIRMWARE = os.environ.get("DS_PERF_FIRMWARE_VERSION")
+if OVERLAP_EVENT_SAMPLES < 1:
+    raise ValueError("DS_PERF_OVERLAP_SAMPLES must be at least 1")
+
 
 def _cache_format_id(cache_format: MlaKvCacheFormat) -> str:
     return {
@@ -194,7 +224,8 @@ def _profile_case_id(mode: str, cache_format: MlaKvCacheFormat) -> str:
 def _subdir(variant: str, mode: str, cache_format: MlaKvCacheFormat) -> str:
     """Format-specific profiler directory; matched sparse BF16/FP8 reports must never clobber each other."""
     profile_case = _profile_case_id(mode, cache_format).replace("-", "_")
-    return f"{variant}_{profile_case}_mla_perf"
+    overlap_suffix = f"_{OVERLAP_PROFILE}_{'overlap' if OVERLAP_ENABLED else 'serial'}" if OVERLAP_PROFILE else ""
+    return f"{variant}_{profile_case}{overlap_suffix}_mla_perf"
 
 
 def _csv_name(variant: str, mode: str, cache_format: MlaKvCacheFormat) -> str:
@@ -298,7 +329,17 @@ def _git_head() -> dict:
         return {"commit": None, "branch": None}
 
 
-def _write_run_manifest(report_dir, *, variant, scenario, attn_mode, cache_format, command, workload) -> None:
+def _write_run_manifest(
+    report_dir,
+    *,
+    variant,
+    scenario,
+    attn_mode,
+    cache_format,
+    command,
+    workload,
+    overlap_qualification=None,
+) -> None:
     """Drop a lean run_manifest_<scenario>.json into the output dir. Records ONLY what cannot be
     reconstructed from git (given the commit) or from the co-located ops CSV:
       * commit / branch — the code-state anchor (read subprocess-free from .git; no dirty flag — the
@@ -319,12 +360,16 @@ def _write_run_manifest(report_dir, *, variant, scenario, attn_mode, cache_forma
         case_filter = _profile_case_id(attn_mode, cache_format)
         reproducer = (
             f"DS_PERF_CACHE={CACHE_TOKENS} DS_PERF_CHUNK={CHUNK_TOKENS} DS_PERF_LONG_CACHE={LONG_CACHE_TOKENS} "
-            f"{command} -k '{variant} and {scenario} and {case_filter}'"
+            + (f"DS_PERF_OVERLAP_PROFILE={OVERLAP_PROFILE} " if OVERLAP_PROFILE else "")
+            + (f"DS_PERF_OVERLAP_ENABLED={int(OVERLAP_ENABLED)} " if OVERLAP_PROFILE else "")
+            + (f"DS_PERF_FIRMWARE_VERSION={QUALIFICATION_FIRMWARE} " if QUALIFICATION_FIRMWARE else "")
+            + (f"DS_PERF_OVERLAP_BASELINE_NS={OVERLAP_BASELINE_NS:g} " if OVERLAP_BASELINE_NS else "")
+            + f"{command} -k '{variant} and {scenario} and {case_filter}'"
         )
         head = _git_head()
         manifest = {
-            "schema_version": 3,
-            "profiler": "realtime",
+            "schema_version": 4,
+            "profiler": "device_completion_event" if overlap_qualification else "realtime",
             "variant": variant,
             "scenario": scenario,
             "attn_mode": attn_mode,
@@ -337,8 +382,10 @@ def _write_run_manifest(report_dir, *, variant, scenario, attn_mode, cache_forma
                 "mesh_sp": workload.sp,
                 "mesh_tp": workload.tp,
                 "fabric": getattr(PERF_FABRIC, "name", str(PERF_FABRIC)),
+                "firmware_bundle": QUALIFICATION_FIRMWARE,
             },
             "build": {"so_mtime": so_mtime},
+            "sparse_mla_overlap": overlap_qualification,
             "command": reproducer,
         }
         path = _contained(os.path.join(report_dir, f"run_manifest_{scenario}.json"))
@@ -396,6 +443,12 @@ _SYSTEM_BY_DEVICE_COUNT = {
     32: ("Galaxy", (8, 4)),
 }
 
+_OVERLAP_SYSTEM_BY_PROFILE = {
+    "qb2_80_30": ("QB2", 4, (2, 2), 80, 30),
+    "loudbox_80_40": ("LoudBox", 8, (2, 4), 80, 40),
+    "galaxy_80_40": ("Galaxy", 32, (8, 4), 80, 40),
+}
+
 
 def _exact_div(numerator: int, denominator: int, label: str) -> int:
     if numerator % denominator != 0:
@@ -405,7 +458,21 @@ def _exact_div(numerator: int, denominator: int, label: str) -> int:
 
 def _detect_perf_workload(variant_name: str) -> tuple[PerfWorkload, str | None]:
     num_devices = detect_num_devices()
-    system = _SYSTEM_BY_DEVICE_COUNT.get(num_devices)
+    if OVERLAP_PROFILE:
+        qualification = _OVERLAP_SYSTEM_BY_PROFILE.get(OVERLAP_PROFILE)
+        if qualification is None:
+            expected = ", ".join(sorted(_OVERLAP_SYSTEM_BY_PROFILE))
+            placeholder = PerfWorkload("unsupported", num_devices, (1, 1), CHUNK_TOKENS, 32, 16)
+            return placeholder, f"unknown DS_PERF_OVERLAP_PROFILE={OVERLAP_PROFILE!r}; expected {expected}"
+        system_name, expected_devices, mesh_shape, _, _ = qualification
+        if num_devices != expected_devices:
+            placeholder = PerfWorkload("unsupported", num_devices, (1, 1), CHUNK_TOKENS, 32, 16)
+            return placeholder, (
+                f"overlap profile {OVERLAP_PROFILE} requires {expected_devices} devices, detected {num_devices}"
+            )
+        system = (system_name, mesh_shape)
+    else:
+        system = _SYSTEM_BY_DEVICE_COUNT.get(num_devices)
     if system is None:
         placeholder = PerfWorkload("unsupported", num_devices, (1, 1), CHUNK_TOKENS, 32, 16)
         return placeholder, (
@@ -544,7 +611,7 @@ def _write_ops_dump(out_dir: str, name_root: str, forwards: list) -> str:
                         forward_index,
                         seq,
                         runtime_id,
-                        _op_code(info["kernel_sources"]),
+                        info.get("op_code", _op_code(info["kernel_sources"])),
                         f"{info['duration_ns']:.3f}",
                         "|".join(info["kernel_sources"]),
                     ]
@@ -577,11 +644,71 @@ def _profile_forward(mesh_device, run_fn) -> dict:
     return per_program
 
 
+def _profile_forward_completion_event(mesh_device, run_fn, *, overlap_enabled: bool) -> dict:
+    """Measure one complete overlap-enabled forward without relying on lossy concurrent RT records."""
+    start_ns = time.perf_counter_ns()
+    run_fn()
+    complete = ttnn.record_event(mesh_device, 0)
+    ttnn.event_synchronize(complete)
+    duration_ns = time.perf_counter_ns() - start_ns
+    return {
+        1: {
+            "duration_ns": float(duration_ns),
+            "kernel_sources": (),
+            "op_code": "SparseMlaForwardOverlap" if overlap_enabled else "SparseMlaForwardSerial",
+        }
+    }
+
+
 def _programs_to_frame(per_program: dict, dur_col: str) -> pd.DataFrame:
     """One row per device program: (OP CODE label, critical-path duration)."""
     return pd.DataFrame(
-        [{"OP CODE": _op_code(info["kernel_sources"]), dur_col: info["duration_ns"]} for info in per_program.values()]
+        [
+            {
+                "OP CODE": info.get("op_code", _op_code(info["kernel_sources"])),
+                dur_col: info["duration_ns"],
+            }
+            for info in per_program.values()
+        ]
     )
+
+
+def _overlap_scheduler_qualification(mla, kvpe_cache, num_links: int) -> dict:
+    """Mirror the runtime-controlled Blackhole tier choice and record its production inputs."""
+    resources = mla._sparse_mla_overlap
+    assert resources is not None
+    input_shard = ttnn.get_device_tensors(kvpe_cache.storage)[0]
+    output_shard = ttnn.get_device_tensors(mla._sparse_kv_gather_buffer)[0]
+    input_page_size = input_shard.buffer_aligned_page_size()
+    output_bytes = output_shard.buffer_num_pages() * output_shard.buffer_aligned_page_size()
+    per_link_bytes = output_bytes // num_links
+
+    # input_batch_index/gathered_dim_size make this the runtime-controlled schedule, so fixed-shape bank
+    # ownership is unavailable. The factory prefers 8 only for >=32 MB/link with >=2 KB input pages;
+    # otherwise it uses 2. Restricted grids snap 8 -> 4 -> 2 -> 1 by exact core capacity.
+    preferred = 8 if per_link_bytes >= 32_000_000 and input_page_size >= 2048 else 2
+    available = resources.gather_core_grid.num_cores()
+    selected = next(
+        candidate
+        for candidate in (8, 4, 2, 1)
+        if candidate <= preferred and num_links * 2 * (candidate + (1 if candidate > 1 else 0)) <= available
+    )
+    active_cores = num_links * 2 * (selected + (1 if selected > 1 else 0))
+    return {
+        "profile": resources.profile,
+        "worker_grid": [
+            mla.mesh_device.compute_with_storage_grid_size().x,
+            mla.mesh_device.compute_with_storage_grid_size().y,
+        ],
+        "topk_owned_cores": resources.topk_core_grid.num_cores(),
+        "gather_owned_cores": available,
+        "num_links": num_links,
+        "input_page_size_bytes": input_page_size,
+        "worst_case_output_bytes_per_link": per_link_bytes,
+        "preferred_workers_per_direction": preferred,
+        "selected_workers_per_direction": selected,
+        "active_gather_cores": active_cores,
+    }
 
 
 def _by_op(frame: pd.DataFrame, dur_col: str) -> pd.DataFrame:
@@ -634,9 +761,14 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
     workload, skip_reason = _detect_perf_workload(variant.name)
     if skip_reason:
         pytest.skip(skip_reason)
-    # Assert profiler activation only after skip checks pass: an unsupported system should skip with the
-    # informative reason above, not hard-fail here.
-    _require_rt_profiler()
+    if OVERLAP_PROFILE and (variant.name != "glm_5_2" or attn_mode != "sparse"):
+        pytest.skip("DS_PERF_OVERLAP_PROFILE qualifies only GLM-5.2 sparse MLA")
+    if OVERLAP_PROFILE in ("loudbox_80_40", "galaxy_80_40") and not QUALIFICATION_FIRMWARE:
+        pytest.fail("production overlap qualification requires DS_PERF_FIRMWARE_VERSION for the run manifest")
+    # Assert profiler activation only for serial runs. Overlap runs use a full-forward completion event
+    # because the current realtime transport cannot retain both concurrent sub-device records.
+    if not OVERLAP_PROFILE:
+        _require_rt_profiler()
 
     scenario_cfg = SCENARIOS[scenario]
     is_cold = scenario_cfg["loop"]
@@ -694,6 +826,7 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
         layer_num=1,
         has_indexer=has_indexer,  # sparse: DSA indexer + sparse_sdpa; dense: NullIndexer + ring MLA
         sparse_kv_cache_format=kv_cache_format if has_indexer else MlaKvCacheFormat.BF16_RM,
+        sparse_mla_overlap_profile=OVERLAP_PROFILE if OVERLAP_ENABLED else None,
     )
 
     rope = RotarySetup(config, mesh_device, sp_axis=sp_axis, is_balanced=False).get_rope_tensors_indexed(total, chunk)
@@ -775,9 +908,83 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
         ttnn.deallocate(out)
 
     forwards = []  # one {runtime_id -> {...}} per measured forward (device-collapsed to critical path)
-    for start in starts:
-        ttnn.synchronize_device(mesh_device)  # drain prior programs so only this forward contributes records
-        forwards.append(_profile_forward(mesh_device, lambda start=start: _one_forward(start)))
+    overlap_qualification = None
+    if OVERLAP_PROFILE:
+        _, _, _, expected_topk_cores, expected_gather_cores = _OVERLAP_SYSTEM_BY_PROFILE[OVERLAP_PROFILE]
+        if OVERLAP_ENABLED:
+            overlap_qualification = _overlap_scheduler_qualification(mla, kvpe_cache, num_links=mla.ccl_num_links)
+            assert overlap_qualification["topk_owned_cores"] == expected_topk_cores
+            assert overlap_qualification["gather_owned_cores"] == expected_gather_cores
+        else:
+            grid = mesh_device.compute_with_storage_grid_size()
+            overlap_qualification = {
+                "profile": OVERLAP_PROFILE,
+                "worker_grid": [grid.x, grid.y],
+                "topk_owned_cores": expected_topk_cores,
+                "gather_owned_cores": expected_gather_cores,
+            }
+        overlap_qualification.update(
+            {
+                "enabled": OVERLAP_ENABLED,
+                "scenario": scenario,
+                "cache_tokens": cache,
+                "chunk_tokens": chunk,
+                "total_tokens": total,
+                "full_indexer_layer": mla_layer_idx,
+                "kv_cache_format": _cache_format_id(kv_cache_format),
+            }
+        )
+        # Warm every structural hash before event timing; host compilation must not masquerade as device latency.
+        _one_forward(starts[0])
+        ttnn.synchronize_device(mesh_device)
+        measured_starts = starts if is_cold else [starts[0]] * OVERLAP_EVENT_SAMPLES
+        try:
+            for start in measured_starts:
+                forwards.append(
+                    _profile_forward_completion_event(
+                        mesh_device,
+                        lambda start=start: _one_forward(start),
+                        overlap_enabled=OVERLAP_ENABLED,
+                    )
+                )
+        finally:
+            if OVERLAP_ENABLED:
+                mla.release_sparse_mla_overlap_manager()
+        event_samples_ns = [next(iter(per_forward.values()))["duration_ns"] for per_forward in forwards]
+        median_ns = statistics.median(event_samples_ns)
+        measured_ns = sum(event_samples_ns) if is_cold else median_ns
+        improvement = None
+        if OVERLAP_ENABLED and OVERLAP_BASELINE_NS is not None:
+            improvement = 1.0 - measured_ns / OVERLAP_BASELINE_NS
+            assert improvement >= OVERLAP_MIN_IMPROVEMENT, (
+                f"overlap improvement {improvement:.1%} is below {OVERLAP_MIN_IMPROVEMENT:.1%}: "
+                f"measured={measured_ns / 1e6:.3f} ms baseline={OVERLAP_BASELINE_NS / 1e6:.3f} ms"
+            )
+        overlap_qualification.update(
+            {
+                "timing_samples_ns": event_samples_ns,
+                "median_forward_ns": median_ns,
+                "measured_scenario_ns": measured_ns,
+                "serial_baseline_ns": OVERLAP_BASELINE_NS,
+                "whole_forward_improvement": improvement,
+                "minimum_required_improvement": OVERLAP_MIN_IMPROVEMENT,
+                "gate_applied": OVERLAP_ENABLED and OVERLAP_BASELINE_NS is not None,
+            }
+        )
+        if not is_cold:
+            forwards = [
+                {
+                    1: {
+                        "duration_ns": median_ns,
+                        "kernel_sources": (),
+                        "op_code": "SparseMlaForwardOverlap" if OVERLAP_ENABLED else "SparseMlaForwardSerial",
+                    }
+                }
+            ]
+    else:
+        for start in starts:
+            ttnn.synchronize_device(mesh_device)  # drain prior programs so only this forward contributes records
+            forwards.append(_profile_forward(mesh_device, lambda start=start: _one_forward(start)))
 
     dur_col = "DEVICE KERNEL DURATION [ns]"  # kept for downstream compatibility (holds RT critical-path ns)
     frame = pd.concat([_programs_to_frame(pp, dur_col) for pp in forwards], ignore_index=True)
@@ -800,8 +1007,8 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
             f"{workload.chunk_tokens}-tok chunk, {span}, SP={workload.sp}×TP={workload.tp}",
             f"Galaxy target: {CHUNK_TOKENS}-tok chunk @ {galaxy_cache}-tok cache, SP={GALAXY_SP}×TP={GALAXY_TP}; "
             f"local chunk={CHUNK_TOKENS // GALAXY_SP}, local MLA heads={workload.num_attention_heads // GALAXY_TP}",
-            f"critical-path device-kernel time over the {'prefill' if is_cold else 'chunk'} "
-            f"(realtime profiler; per-program max across chips): "
+            f"critical-path time over the {'prefill' if is_cold else 'chunk'} "
+            f"({'completion-event whole forward' if OVERLAP_PROFILE else 'realtime profiler; per-program max across chips'}): "
             f"{total_ns/1e6:.3f} ms across {int(by_op['count'].sum())} device programs",
             "(OP CODE = tracy-style op code mapped from kernel sources; see module docstring)",
             header,
@@ -835,6 +1042,7 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
         cache_format=kv_cache_format,
         command=command,
         workload=workload,
+        overlap_qualification=overlap_qualification,
     )
 
     # cold only: per-cache-fill-iteration breakdown. The aggregate above sums all chunks; this shows how

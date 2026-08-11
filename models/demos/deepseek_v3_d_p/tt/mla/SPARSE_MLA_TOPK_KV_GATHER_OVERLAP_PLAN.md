@@ -658,16 +658,18 @@ Production acceptance requires all of:
 
 - [x] `topk_large_indices` sub-device/core-grid API and tests
 - [x] `high_bw_all_gather` external-semaphore interface and C++ factory path
-- [ ] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
+- [x] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
 - [x] exact-hash warmup and cold-cache serialization coverage
 - [ ] 30-versus-40-core gather tier measurements
 - [x] split indexer score/select/finalize API with serial wrapper
 - [x] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
 - [x] sparse-MLA overlap integration and serial fallback
-- [ ] correctness, Watcher, deadlock, lifetime, and cache-hit coverage
-- [ ] manager-switch cost and whole-forward net-win gate
-- [ ] realtime-profiler overlap report and end-to-end GLM-5.2 LoudBox/Galaxy benchmark
-- [ ] production configuration/manifest recording the selected split and tier
+- [x] QB2 correctness, growing-prefix lifetime, repeated semaphore, and cache-hit coverage
+- [ ] Watcher/deadlock stress on LoudBox/Galaxy
+- [x] matched-mesh whole-forward completion-event net-win gate and manifest plumbing
+- [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
+- [ ] end-to-end GLM-5.2 LoudBox/Galaxy benchmark
+- [x] production qualification configuration/manifest recording the selected split and tier
 - [x] Claude Opus plan reviews incorporated, with disposition recorded below
 
 ### Implemented QB2 integration evidence
@@ -684,9 +686,49 @@ semaphore pair. Host contract tests additionally assert the closed program
 allowlist, join-before-TP-redistribution order, exception recovery, and exact
 `high_bw_all_gather` resource arguments.
 
-This is functional QB2 qualification only. Device-timestamp intersection,
-80/40 performance, long/growing prefixes, Watcher stress, scaled-FP8, and the
-whole-forward net-win gate remain open for LoudBox/Galaxy Phase 6 runs.
+This is functional QB2 qualification only. 80/40 performance, production-long
+prefixes, Watcher stress, scaled-FP8, and a passing whole-forward net-win gate
+remain open for LoudBox/Galaxy Phase 6 runs.
+
+The follow-up QB2 integration test
+`test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime` runs two
+256-token chunks against one 512-token cache. It deliberately retains both
+device outputs until the second overlap region and its full-grid consumers
+complete, asserts distinct output allocations, then reads both back. Serial,
+cold-overlap, and warm-cache-overlap outputs match at PCC 1.0 for both the
+256-token and 512-token populated prefixes. The second overlap pass adds no
+program-cache entries.
+
+The standalone operation test now proves independent device progress without
+depending on profiler delivery: after enqueueing a production-proxy 80-core
+top-k followed by a 30-core gather, it synchronizes a host-visible event for
+only the gather sub-device. On the local QB2, the gather event completed in
+0.314--0.315 ms while the fastest isolated top-k event took 2.331 ms. A
+serialized dispatcher could not complete the later gather-scoped event before
+the earlier top-k. The same run validates exact top-k and gather outputs; the
+adjacent tests cover 100-call semaphore reuse, cache-hit semaphore-address
+rebinding, and all interface validation failures.
+
+`test_sparse_mla_perf.py` now accepts `DS_PERF_OVERLAP_PROFILE` values
+`qb2_80_30`, `loudbox_80_40`, and `galaxy_80_40`. The named profile selects the
+matched SP x TP mesh, restricts qualification to GLM-5.2 sparse MLA, warms the
+exact hashes, and writes a schema-v4 manifest containing the worker grid,
+80/30 or 80/40 ownership, KVPE page size, worst-case bytes/link, preferred and
+selected workers/direction, active gather cores, timing samples, baseline, and
+net-win decision. `DS_PERF_OVERLAP_ENABLED=0` measures an apples-to-apples
+serial completion-event baseline on that same mesh;
+`DS_PERF_OVERLAP_BASELINE_NS` enables the default 10% acceptance gate.
+
+The local BF16 smoke run resolved a 1152-byte KVPE page and selected two
+workers/direction (12 active gather cores) inside the 30-core ownership strip.
+Its intentionally tiny 256-token proxy measured 5.743 ms serial versus 6.315
+ms overlap, so it is correctly not a production win and was not supplied as a
+passing baseline gate. LoudBox/Galaxy production shapes must establish the
+80/40 result. The current realtime-profiler transport has one dispatch
+timestamp/push slot and drops one of two concurrent sub-device records; the
+qualification harness therefore uses a full-forward device completion event
+for valid serial/overlap comparison instead of publishing a misleading summed
+RT report. The op-level sub-device event remains the direct concurrency proof.
 
 ## Claude Opus review disposition
 
@@ -772,3 +814,10 @@ without producing output and were terminated after bounded waits, so they do
 not constitute additional verdicts. The four successful Opus reviews above
 remain the recorded plan/operation dispositions; this document does not claim
 that the post-integration retries approved the branch.
+
+After adding the independent-progress, growing-prefix, and production-manifest
+phases, a further review was invoked with
+`claude --dangerously-skip-permissions --model opus --effort medium --print ...`.
+It likewise produced no output before the bounded 180-second timeout. No
+different Claude model was substituted, and this attempt is not represented as
+an approval.
