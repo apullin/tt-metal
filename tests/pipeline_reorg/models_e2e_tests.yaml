@@ -1084,11 +1084,11 @@
   model: distilbert
   model_family: DistilBERT
   skus:
-    # 6.8 min measured (run 31393369681) + ~15% -> 8.
+    # Test-step 1.1 min measured (runs 31505413199 / 31511489499).
     wh_n150:
       timeout: 3
       tier: 3
-  owner_id: U024A4EFV6U # Brian Liu
+  owner_id: U087S3K319A # Austin Ho (CODEOWNERS models/**/distilbert/ @tt-aho)
   team: models
 
 - name: SqueezeBERT e2e tests
