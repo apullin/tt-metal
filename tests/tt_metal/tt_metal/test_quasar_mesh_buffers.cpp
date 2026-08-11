@@ -119,7 +119,7 @@ TEST_F(QuasarUnitMeshFixture, MeshBufferMultipleWriteReadRoundsL1) {
         distributed::EnqueueWriteMeshBuffer(cq, buf, src);
 
         std::vector<uint32_t> dst;
-        slow_dispatch::ReadFromBuffer(*buf, dst);
+        distributed::EnqueueReadMeshBuffer(cq, dst, buf, /*blocking=*/true);
 
         ASSERT_EQ(dst, src);
     }
