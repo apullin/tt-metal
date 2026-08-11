@@ -312,8 +312,8 @@ models:
     bh_p150b_civ2_viommu: 110
     bh_p300: 10
   frequent:
-    wh_n150: 408
-    wh_n300: 390
+    wh_n150: 348
+    wh_n300: 330
     wh_n150_civ2: 30
     wh_n300_civ2: 30
     bh_p150b_civ2: 120
@@ -347,7 +347,7 @@ models:
     bh_quietbox_2: 186
   e2e_tier3:
     wh_llmbox_perf: 64
-    wh_n150: 62
+    wh_n150: 134
     wh_n300: 60
     bh_p150: 7
     bh_p300: 8
@@ -380,7 +380,7 @@ models:
   unit_tier3:
     wh_llmbox: 20
     wh_llmbox_perf: 58
-    wh_n150: 41
+    wh_n150: 70
     wh_n300: 33
     bh_p150: 20
     bh_p300: 30

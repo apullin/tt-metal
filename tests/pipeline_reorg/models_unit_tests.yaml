@@ -286,6 +286,60 @@
   owner_id: U088413NP0Q # Ashai Reddy Ginuga
   team: models
 
+# ── Small vision / BERT-family models (tier 3) ─────────────────────
+#
+# Both entries are ported from single_card_ttnn_models_frequent_tests.yaml, which ran
+# them on N150 and N300; the N300 legs are dropped with the rest of this migration.
+# Each legacy entry pointed pytest at a tests/nightly/single_card/<model> directory of
+# symlinks — those directories are removed here and the real test paths referenced
+# directly. The one non-symlink file, test_ttnn_functional_resnet50_large.py, moves
+# next to its sibling under the model's own tests/ directory. Each entry keeps its
+# tests in a single pytest invocation, matching the legacy `pytest <dir>` semantics —
+# splitting them would make the cmd's `bash -e` abort before the second file ran.
+#
+# Both unset TT_METAL_WATCHER. models-unit-tests-impl.yaml passes enable-watcher: true,
+# which sets TT_METAL_WATCHER=2 — neither the legacy frequent pipeline nor the demo
+# pipeline ran a watcher, so leaving it on would be a behaviour change on top of the
+# relocation: it inflates wall-clock (invalidating the measured timeouts below) and, as
+# the Mistral entry above documents, can surface latent NOC/CB failures that the legacy
+# jobs never hit. Turning the watcher on for these two is a follow-up, not part of this
+# move.
+
+- name: metal BERT large 11 unit tests
+  cmd: |
+    unset TT_METAL_WATCHER
+    export HF_HUB_OFFLINE=0
+    pytest --timeout 480 \
+      models/demos/metal_BERT_large_11/tests/test_bert_batch_dram.py \
+      models/demos/metal_BERT_large_11/tests/test_demo.py
+  model: metal-bert-large-11
+  model_family: BERT
+  skus:
+    # `common_models nightly [wh_n150]` wall-clock over runs 31461711973 / 31359025244 /
+    # 31296628689: 7.3 / 6.0 / 5.5 min. Worst + ~15% -> 9.
+    wh_n150:
+      timeout: 9
+      tier: 3
+  owner_id: U087S3K319A # Austin Ho
+  team: models
+
+- name: ResNet-50 unit tests
+  cmd: |
+    unset TT_METAL_WATCHER
+    pytest --timeout 900 \
+      models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_performant.py \
+      models/demos/vision/classification/resnet50/wormhole/tests/test_ttnn_functional_resnet50_large.py
+  model: resnet50
+  model_family: ResNet
+  skus:
+    # `resnet50 nightly [wh_n150]` wall-clock over runs 31461711973 / 31359025244 /
+    # 31296628689: 17.1 / 16.0 / 16.1 min. Worst + ~15% -> 20.
+    wh_n150:
+      timeout: 20
+      tier: 3
+  owner_id: U085GDCAZTN # Pavle Josipovic
+  team: models
+
 - name: Gemma-3-4B unit tests
   cmd: |
     export TT_METAL_WATCHER=30

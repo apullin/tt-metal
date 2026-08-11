@@ -1001,6 +1001,144 @@
   owner_id: U088413NP0Q # Ashai Reddy Ginuga
   team: models
 
+# ── Small vision / BERT-family models (tier 3) ─────────────────────
+#
+# Ported from the inline matrix in .github/workflows/single-card-demo-tests-impl.yaml,
+# where these ran as run_<model>_func on both N150 and N300. The eight entries below
+# replace 15 matrix rows: 7 models × 2 SKUs, plus the ResNet-50 stability row that ran
+# with `performance: true` on N150. The N300 legs are dropped — every N300 leg ran the
+# same test as its N150 twin, and these are tier 3 models kept on a single SKU.
+#
+# Timeouts are job wall-clock of the N150 legs in the last all-green legacy run
+# (31393369681) + ~15%. That pipeline mounts /mnt/MLPerf and sets HF_HUB_CACHE the
+# same way the tiered impl does, so the numbers should carry over, but none of them
+# were measured on the tiered runner pool. Re-measure after the first tiered run.
+#
+# The four BERT-family demos resolve their checkpoints through transformers'
+# from_pretrained, so they set HF_HUB_OFFLINE=0 — the tiered impl defaults WH SKUs to
+# offline, while the legacy demo pipeline left HF online against the same read-only
+# /mnt/MLPerf mount. VGG (torchvision), ResNet-50 and MNIST resolve weights through
+# model_location_generator / torchvision (/mnt/MLPerf/tt_dnn-models, mounted whole for
+# WH SKUs) and need no override.
+
+- name: VGG e2e tests
+  cmd: |
+    pytest --timeout 540 models/demos/vision/classification/vgg/demo/demo.py
+  model: vgg
+  model_family: VGG
+  skus:
+    # 7.7 min measured (run 31393369681) + ~15% -> 9.
+    wh_n150:
+      timeout: 9
+      tier: 3
+  owner_id: U06Q7ESTFEV # Borys Bradel
+  team: models
+
+- name: BERT-Tiny e2e tests
+  cmd: |
+    export HF_HUB_OFFLINE=0
+    pytest --timeout 480 models/demos/wormhole/bert_tiny/demo/demo.py
+  model: bert-tiny
+  model_family: BERT
+  skus:
+    # 6.6 min measured (run 31393369681) + ~15% -> 8.
+    wh_n150:
+      timeout: 8
+      tier: 3
+  owner_id: U024A4EFV6U # Brian Liu
+  team: models
+
+# The legacy helper ran batch_7 and batch_8 with `|| fail=1` and exited non-zero at
+# the end, so both always ran. The registry cmd runs under `bash -e`, which would
+# abort at the first failure — the exit_code accumulator preserves the old behaviour.
+- name: metal BERT large 11 e2e tests
+  cmd: |
+    export HF_HUB_OFFLINE=0
+    exit_code=0
+    pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
+    pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
+    exit $exit_code
+  model: metal-bert-large-11
+  model_family: BERT
+  skus:
+    # 11.6 min measured (run 31393369681) + ~15% -> 14.
+    wh_n150:
+      timeout: 14
+      tier: 3
+  owner_id: U024A4EFV6U # Brian Liu
+  team: models
+
+- name: DistilBERT e2e tests
+  cmd: |
+    export HF_HUB_OFFLINE=0
+    pytest --timeout 480 models/demos/wormhole/distilbert/demo/demo.py
+  model: distilbert
+  model_family: DistilBERT
+  skus:
+    # 6.8 min measured (run 31393369681) + ~15% -> 8.
+    wh_n150:
+      timeout: 8
+      tier: 3
+  owner_id: U087S3K319A # Austin Ho
+  team: models
+
+- name: SqueezeBERT e2e tests
+  cmd: |
+    export HF_HUB_OFFLINE=0
+    pytest --timeout 420 models/demos/squeezebert/demo/demo.py
+  model: squeezebert
+  model_family: SqueezeBERT
+  skus:
+    # 6.0 min measured (run 31393369681) + ~15% -> 7.
+    wh_n150:
+      timeout: 7
+      tier: 3
+  owner_id: U07D5N7QL4U # Joseph Chu
+  team: models
+
+- name: MNIST e2e tests
+  cmd: |
+    pytest --timeout 420 models/demos/vision/classification/mnist/demo/demo.py
+  model: mnist
+  model_family: MNIST
+  skus:
+    # 6.0 min measured (run 31393369681) + ~15% -> 7.
+    wh_n150:
+      timeout: 7
+      tier: 3
+  owner_id: U088DBNUKGR # Evan Smal
+  team: models
+
+- name: ResNet-50 e2e tests
+  cmd: |
+    pytest --timeout 660 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
+  model: resnet50
+  model_family: ResNet
+  skus:
+    # 9.3 min measured (run 31393369681) + ~15% -> 11.
+    wh_n150:
+      timeout: 11
+      tier: 3
+  owner_id: U0837MYG788 # Marko Radosavljevic
+  team: models
+
+# Kept separate from the ResNet-50 e2e entry above so the two carry their own
+# timeouts. This is the row that ran with `performance: true` on N150 in the legacy
+# matrix; on N150 that flag selected no special runner or CPU governor (both were
+# gated on N300), so it is a plain relocation.
+- name: ResNet-50 stability e2e tests
+  cmd: |
+    pytest --timeout 480 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
+  model: resnet50
+  model_family: ResNet
+  skus:
+    # 6.3 min measured (run 31358951778) + ~15% -> 8.
+    wh_n150:
+      timeout: 8
+      tier: 3
+  owner_id: U0837MYG788 # Marko Radosavljevic
+  team: models
+
 - name: TT-DiT Wan2.2-T2V-A14B e2e tests (BH QuietBox 2)
   cmd: |
     unset HF_HUB_OFFLINE

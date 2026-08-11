@@ -108,6 +108,13 @@ it is classified differently on different systems.
 | Panoptic-DeepLab | BH P150 |
 | BEVFormer | BH P150 |
 | Mistral-Small-3.1-24B | WH LLMBox, BH QuietBox 2 |
+| VGG | WH N150 |
+| BERT-Tiny | WH N150 |
+| metal BERT large 11 | WH N150 |
+| DistilBERT | WH N150 |
+| SqueezeBERT | WH N150 |
+| MNIST | WH N150 |
+| ResNet-50 | WH N150 |
 
 
 # Pipelines
