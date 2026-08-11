@@ -665,6 +665,7 @@ Production acceptance requires all of:
 - [x] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
 - [x] sparse-MLA overlap integration and serial fallback
 - [x] QB2 correctness, growing-prefix lifetime, repeated semaphore, and cache-hit coverage
+- [x] QB2 Tensix Watcher stress for independent top-k/gather progress
 - [ ] Watcher/deadlock stress on LoudBox/Galaxy
 - [x] matched-mesh whole-forward completion-event net-win gate and manifest plumbing
 - [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
@@ -708,6 +709,21 @@ serialized dispatcher could not complete the later gather-scoped event before
 the earlier top-k. The same run validates exact top-k and gather outputs; the
 adjacent tests cover 100-call semaphore reuse, cache-hit semaphore-address
 rebinding, and all interface validation failures.
+
+The same independent-progress test passes with Tensix Watcher enabled via
+`TT_METAL_WATCHER=1 TT_METAL_WATCHER_DISABLE_ETH=1`: the gather-scoped event
+completed in 0.595 ms while the isolated 80-core top-k lower bound was 2.445
+ms, and Watcher reported no Tensix fault. Ethernet Watcher must be disabled on
+the current local QB2 firmware bundle (19.10.0), because enabling Watcher on
+the fabric routers makes the ACTIVE_ETH image 29,680 bytes, exceeding its
+25,600-byte kernel-config buffer during device setup. This is not an overlap
+failure: no operation is dispatched in that configuration. A full
+growing-prefix model run under Tensix Watcher later aborts in the serial
+reference `topk_large_indices` call without a Watcher fault report, before the
+overlap region. Therefore the op-level concurrent path has local Watcher
+coverage, while full-model Watcher/deadlock qualification remains an explicit
+LoudBox/Galaxy gate and must use a firmware/build whose instrumented fabric
+image fits.
 
 `test_sparse_mla_perf.py` now accepts `DS_PERF_OVERLAP_PROFILE` values
 `qb2_80_30`, `loudbox_80_40`, and `galaxy_80_40`. The named profile selects the
