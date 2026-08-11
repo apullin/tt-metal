@@ -659,16 +659,34 @@ Production acceptance requires all of:
 - [x] `topk_large_indices` sub-device/core-grid API and tests
 - [x] `high_bw_all_gather` external-semaphore interface and C++ factory path
 - [ ] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
-- [ ] exact-hash warmup and cold-cache serialization coverage
+- [x] exact-hash warmup and cold-cache serialization coverage
 - [ ] 30-versus-40-core gather tier measurements
 - [x] split indexer score/select/finalize API with serial wrapper
 - [x] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
-- [ ] sparse-MLA overlap integration and serial fallback
+- [x] sparse-MLA overlap integration and serial fallback
 - [ ] correctness, Watcher, deadlock, lifetime, and cache-hit coverage
 - [ ] manager-switch cost and whole-forward net-win gate
 - [ ] realtime-profiler overlap report and end-to-end GLM-5.2 LoudBox/Galaxy benchmark
 - [ ] production configuration/manifest recording the selected split and tier
 - [ ] Claude Opus review incorporated, with disposition recorded below
+
+### Implemented QB2 integration evidence
+
+The focused GLM-5.2 eager test
+`test_glm52_sparse_mla_qb2_overlap_matches_serial` runs on the local four-chip
+QB2 as a `2 x 2` SP x TP mesh. Every chip still uses its native `11 x 10`
+worker grid and the exact 80/30 sub-device profile. It executes one serial
+reference, one cold split-grid overlap pass, and one warm repeated overlap pass
+with fresh KVPE and compact 21-slot GLM-5.2 index caches. Both overlap passes
+match the serial output at PCC 1.0. The repeated pass exercises the cached
+80-core top-k and 30-core gather hashes and reuse of the same caller-owned
+semaphore pair. Host contract tests additionally assert the closed program
+allowlist, join-before-TP-redistribution order, exception recovery, and exact
+`high_bw_all_gather` resource arguments.
+
+This is functional QB2 qualification only. Device-timestamp intersection,
+80/40 performance, long/growing prefixes, Watcher stress, scaled-FP8, and the
+whole-forward net-win gate remain open for LoudBox/Galaxy Phase 6 runs.
 
 ## Claude Opus review disposition
 
