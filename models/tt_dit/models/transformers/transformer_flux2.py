@@ -13,15 +13,11 @@ import ttnn
 from ...blocks.attention_opt import Attention
 from ...blocks.transformer_block_opt import TransformerBlock
 from ...layers.embeddings import CombinedTimestepGuidanceTextProjEmbeddings
-from ...layers.linear import (
-    ColParallelLinear,
-    RowParallelLinear,
-    prepare_chunked_linear_output,
-    prepare_weight_for_concatenated_input,
-)
+from ...layers.linear import ColParallelLinear, RowParallelLinear, prepare_chunked_linear_output
 from ...layers.module import Module, ModuleList
 from ...layers.normalization import DistributedLayerNorm
 from ...utils.substate import rename_substate
+from ...utils.tensor import prepare_weight_for_concatenated_input
 
 if TYPE_CHECKING:
     from ...parallel.config import DiTParallelConfig
