@@ -297,45 +297,49 @@
 # tests in a single pytest invocation, matching the legacy `pytest <dir>` semantics —
 # splitting them would make the cmd's `bash -e` abort before the second file ran.
 #
-# Both unset TT_METAL_WATCHER. models-unit-tests-impl.yaml passes enable-watcher: true,
-# which sets TT_METAL_WATCHER=2 — neither the legacy frequent pipeline nor the demo
-# pipeline ran a watcher, so leaving it on would be a behaviour change on top of the
-# relocation: it inflates wall-clock (invalidating the measured timeouts below) and, as
-# the Mistral entry above documents, can surface latent NOC/CB failures that the legacy
-# jobs never hit. Turning the watcher on for these two is a follow-up, not part of this
-# move.
+# All three run WITH the watcher. models-unit-tests-impl.yaml passes enable-watcher:
+# true, which sets TT_METAL_WATCHER=2 (plus APPEND / NOINLINE / DISABLE_ETH). Neither
+# the legacy frequent pipeline nor the T3K integration pipeline ran a watcher, so this
+# is deliberately stricter than the jobs being replaced rather than a like-for-like
+# port: the Llama and Mistral entries above had to unset it, and running these three
+# with it on is what proves they do not need the same exemption.
+#
+# The consequence is that the timeouts below are NOT the measured legacy wall-clock —
+# the watcher adds per-launch cost, so each is set to roughly 2x the no-watcher
+# measurement. Re-measure and tighten from the first green watcher-enabled run; the
+# provisional values are called out per entry.
 
 - name: BERT-Large unit tests
   cmd: |
-    unset TT_METAL_WATCHER
     export HF_HUB_OFFLINE=0
-    pytest --timeout 480 \
+    pytest --timeout 1020 \
       models/demos/metal_BERT_large_11/tests/test_bert_batch_dram.py \
       models/demos/metal_BERT_large_11/tests/test_demo.py
   model: bert-large
   model_family: BERT
   skus:
-    # `common_models nightly [wh_n150]` wall-clock over runs 31461711973 / 31359025244 /
-    # 31296628689: 7.3 / 6.0 / 5.5 min. Worst + ~15% -> 9.
+    # No-watcher wall-clock of `common_models nightly [wh_n150]` over runs 31461711973 /
+    # 31359025244 / 31296628689: 7.3 / 6.0 / 5.5 min (worst + ~15% would be 9).
+    # Provisional 2x for the watcher; re-measure from the first green run.
     wh_n150:
-      timeout: 9
+      timeout: 18
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
   team: models
 
 - name: ResNet-50 unit tests
   cmd: |
-    unset TT_METAL_WATCHER
-    pytest --timeout 900 \
+    pytest --timeout 2340 \
       models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_performant.py \
       models/demos/vision/classification/resnet50/wormhole/tests/test_ttnn_functional_resnet50_large.py
   model: resnet50
   model_family: ResNet
   skus:
-    # `resnet50 nightly [wh_n150]` wall-clock over runs 31461711973 / 31359025244 /
-    # 31296628689: 17.1 / 16.0 / 16.1 min. Worst + ~15% -> 20.
+    # No-watcher wall-clock of `resnet50 nightly [wh_n150]` over runs 31461711973 /
+    # 31359025244 / 31296628689: 17.1 / 16.0 / 16.1 min (worst + ~15% would be 20).
+    # Provisional 2x for the watcher; re-measure from the first green run.
     wh_n150:
-      timeout: 20
+      timeout: 40
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
@@ -347,13 +351,14 @@
 # entry rather than another SKU on that one. Timeout carried over from the legacy entry.
 - name: ResNet-50 8-chip unit tests
   cmd: |
-    unset TT_METAL_WATCHER
-    pytest --timeout 840 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_resnet50_performant.py
+    pytest --timeout 1740 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_resnet50_performant.py
   model: resnet50
   model_family: ResNet
   skus:
+    # Legacy t3k_resnet_tests carried 15 with no watcher. Provisional 2x for the
+    # watcher; re-measure from the first green run.
     wh_llmbox:
-      timeout: 15
+      timeout: 30
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
