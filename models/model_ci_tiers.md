@@ -114,7 +114,7 @@ it is classified differently on different systems.
 | DistilBERT | WH N150 |
 | SqueezeBERT | WH N150 |
 | MNIST MLP classifier | WH N150 |
-| ResNet-50 | WH N150 |
+| ResNet-50 | WH N150, WH LLMBox |
 
 
 # Pipelines

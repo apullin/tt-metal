@@ -100,12 +100,10 @@ main() {
   # run_t3000_resnet50_tests, which moved to the tiered Models CI. CI sources this
   # script and calls the run_t3000_* functions individually via t3k_perf_tests.yaml,
   # so main() is reachable only by direct execution.
-  echo "$pipeline_type is invalid (no aggregate pipeline types are defined; source this script and call a run_t3000_* function directly)" 2>&1
+  echo "$pipeline_type is invalid: no aggregate pipeline types are defined." 1>&2
+  echo "Source this script and call a run_t3000_* function directly, e.g.:" 1>&2
+  echo "  source ${BASH_SOURCE[0]} && run_t3000_stable_diffusion_35_large_tests" 1>&2
   exit 1
-
-  if [[ $fail -ne 0 ]]; then
-    exit 1
-  fi
 }
 
 main "$@"

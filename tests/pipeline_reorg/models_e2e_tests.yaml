@@ -1014,12 +1014,18 @@
 # same way the tiered impl does, so the numbers should carry over, but none of them
 # were measured on the tiered runner pool. Re-measure after the first tiered run.
 #
-# The four BERT-family demos resolve their checkpoints through transformers'
-# from_pretrained, so they set HF_HUB_OFFLINE=0 — the tiered impl defaults WH SKUs to
-# offline, while the legacy demo pipeline left HF online against the same read-only
-# /mnt/MLPerf mount. VGG (torchvision), ResNet-50 and MNIST resolve weights through
-# model_location_generator / torchvision (/mnt/MLPerf/tt_dnn-models, mounted whole for
-# WH SKUs) and need no override.
+# The four BERT-family demos AND all three ResNet-50 e2e entries set HF_HUB_OFFLINE=0.
+# The tiered impl forces offline on WH SKUs, while the legacy demo pipelines
+# (single-card and t3000) set no HF_HUB_OFFLINE at all — i.e. online — against the same
+# read-only /mnt/MLPerf mount. ResNet-50 needs it because every imagenet path reaches
+# AutoImageProcessor.from_pretrained("microsoft/resnet-50"), a hub id rather than a
+# model_location_generator path (ttnn_resnet/demo/demo.py:40,128 and
+# wormhole/tests/test_resnet50_performant_imagenet.py:77). Only VGGNet (torchvision) and
+# the MNIST MLP (model_location_generator -> /mnt/MLPerf/tt_dnn-models, mounted whole for
+# WH SKUs) touch no hub and need no override.
+#
+# The unit entries go the other way: their legacy pipelines DID force HF_HUB_OFFLINE=1
+# and were green under it, so they keep the impl default. See models_unit_tests.yaml.
 
 - name: VGGNet e2e tests
   cmd: |
@@ -1111,6 +1117,7 @@
 
 - name: ResNet-50 e2e tests
   cmd: |
+    export HF_HUB_OFFLINE=0
     pytest --timeout 600 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
   model: resnet50
   model_family: ResNet
@@ -1128,6 +1135,7 @@
 # gated on N300), so it is a plain relocation.
 - name: ResNet-50 stability e2e tests
   cmd: |
+    export HF_HUB_OFFLINE=0
     pytest --timeout 420 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
   model: resnet50
   model_family: ResNet
@@ -1142,16 +1150,24 @@
 # Ported from the `t3k_resnet50_tests` entry in t3k_demo_tests.yaml (cmd
 # run_t3000_resnet50_tests in run_t3000_demo_tests.sh, now deleted). This is the 8-chip
 # demo, so it is the T3K counterpart of the wh_n150 e2e entry above rather than a
-# duplicate of it — different test file, different mesh. Timeout carried over from the
-# legacy entry; the shell wrapper's --timeout=720 is preserved on the pytest call.
+# duplicate of it — different test file, different mesh.
+#
+# Two deliberate deltas from the legacy t3k_demo_tests entry:
+#   - The shell wrapper passed --timeout=720, which exceeded its own 10-minute job
+#     budget (600 s) and so could never fire. The per-test cap is 540 s here.
+#   - t3000-demo-tests-impl.yaml wrapped every group in set-cpu-governor
+#     performance/ondemand; models-e2e-tests-impl.yaml has no governor step, so this now
+#     runs on an ondemand-governed host. Timeout bumped 10 -> 13 min to absorb that; the
+#     first tiered run settles the real number.
 - name: ResNet-50 8-chip e2e tests
   cmd: |
+    export HF_HUB_OFFLINE=0
     pytest --timeout 540 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
   model: resnet50
   model_family: ResNet
   skus:
     wh_llmbox_perf:
-      timeout: 10
+      timeout: 13
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models

@@ -311,7 +311,6 @@
 
 - name: BERT-Large unit tests
   cmd: |
-    export HF_HUB_OFFLINE=0
     pytest --timeout 1020 \
       models/demos/metal_BERT_large_11/tests/test_bert_batch_dram.py \
       models/demos/metal_BERT_large_11/tests/test_demo.py
