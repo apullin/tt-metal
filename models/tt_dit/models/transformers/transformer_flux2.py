@@ -372,7 +372,7 @@ class Flux2Transformer(Module):
     def forward(
         self,
         spatial: ttnn.Tensor,
-        prompt: ttnn.Tensor,
+        embedded_prompt: ttnn.Tensor,
         timestep: ttnn.Tensor,
         guidance: ttnn.Tensor,
         spatial_rope: tuple[ttnn.Tensor, ttnn.Tensor],
@@ -386,7 +386,9 @@ class Flux2Transformer(Module):
 
         Args:
             spatial: Tensor with shape [batch_size, spatial_sequence_length / sp_factor, in_channels].
-            prompt: Tensor with shape [batch_size, prompt_sequence_length, joint_attention_dim].
+            embedded_prompt: `context_embedder` applied to the prompt, with shape
+                [batch_size, prompt_sequence_length, inner_dim / tp_factor]. Applied by the caller
+                rather than here because the prompt is constant across denoising steps.
             timestep: Tensor with shape [batch_size, 1].
             guidance: Optional tensor with shape [batch_size, 1].
             spatial_rope: Tuple of two tensors with shape [spatial_sequence_length / sp_factor, head_dim].
@@ -434,7 +436,7 @@ class Flux2Transformer(Module):
         single_stream_mod = self.single_stream_modulation(time_embed, skip_act_fn=True)
 
         spatial = self.x_embedder(spatial)
-        prompt = self.context_embedder(prompt)
+        prompt = embedded_prompt
 
         for i, block in enumerate(self.transformer_blocks, start=1):
             spatial, prompt = block.forward(
