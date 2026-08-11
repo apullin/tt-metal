@@ -3,26 +3,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from loguru import logger
-
 import torch
 import torchvision
+from loguru import logger
+from ttnn.model_preprocessing import (
+    convert_torch_model_to_ttnn_model,
+    fold_batch_norm2d_into_conv2d,
+    preprocess_model_parameters,
+)
 
 import ttnn
-from ttnn.model_preprocessing import (
-    preprocess_model_parameters,
-    fold_batch_norm2d_into_conv2d,
-    convert_torch_model_to_ttnn_model,
-)
-
-from tests.ttnn.utils_for_testing import assert_with_pcc
-from models.common.utility_functions import (
-    enable_memory_reports,
-    is_wormhole_b0,
-)
-
+from models.common.utility_functions import enable_memory_reports
 from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.resnet50_test_infra import load_resnet50_model
 from models.demos.vision.classification.resnet50.ttnn_resnet.tt.ttnn_functional_resnet50_large import resnet50
+from tests.ttnn.utils_for_testing import assert_with_pcc
 
 
 def preprocess_conv_parameter(parameter, *, dtype):
