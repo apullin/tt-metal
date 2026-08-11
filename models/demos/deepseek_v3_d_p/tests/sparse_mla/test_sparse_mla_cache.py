@@ -484,11 +484,17 @@ def _forward(mla, mesh_device, rope_tensors, kvpe_cache, index_kv_cache, hidden)
     ).to(torch.bfloat16)
 
 
-def _new_kvpe(config, mesh_device, mesh_shape, seq_len=SEQ_LEN):
-    # Sparse attention (sparse_sdpa) reads the KVPE cache natively: it must be uncompressed bf16 and
-    # ROW_MAJOR (the sparse forward asserts this), not the init_kvpe_cache bf8/TILE default.
+def _new_kvpe(
+    config,
+    mesh_device,
+    mesh_shape,
+    seq_len=SEQ_LEN,
+    cache_format=MlaKvCacheFormat.BF16_RM,
+):
+    # Sparse attention reads both supported ROW_MAJOR cache formats natively. Keep BF16 as the default
+    # for the broad cache-loading suite, while overlap qualification explicitly covers scaled FP8 too.
     return init_mla_kv_cache(
-        cache_format=MlaKvCacheFormat.BF16_RM,
+        cache_format=cache_format,
         hf_config=config,
         mesh_device=mesh_device,
         seq_len=seq_len,
@@ -525,6 +531,7 @@ def _build_mla(
     is_chunked=False,
     active_seq_len=None,
     sparse_mla_overlap_profile=None,
+    sparse_kv_cache_format=MlaKvCacheFormat.BF16_RM,
 ):
     return ttMLA(
         config,
@@ -536,6 +543,7 @@ def _build_mla(
         tp_axis=TP_AXIS,
         weight_cache_path=weight_cache_path,
         sparse_mla_overlap_profile=sparse_mla_overlap_profile,
+        sparse_kv_cache_format=sparse_kv_cache_format,
         is_chunked=is_chunked,
         active_seq_len=active_seq_len,
         # Single-shot folds onto block-cyclic: the sparse indexer/KVPE write goes through
@@ -650,12 +658,17 @@ def test_glm52_sparse_mla_qb2_overlap_matches_serial(mesh_device, device_params,
     indirect=["mesh_device", "device_params"],
 )
 @pytest.mark.parametrize("variant", ["glm_5_2"], indirect=True, ids=["glm_5_2"])
+@pytest.mark.parametrize(
+    "cache_format",
+    [MlaKvCacheFormat.BF16_RM, MlaKvCacheFormat.SCALED_FP8],
+    ids=["kv_bf16", "kv_scaled_fp8"],
+)
 @pytest.mark.skipif(not is_blackhole(), reason="DSA ops (indexer / sparse SDPA) are Blackhole-only")
 @pytest.mark.timeout(0)
 def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
-    mesh_device, device_params, variant, config_only
+    mesh_device, device_params, variant, cache_format, config_only
 ):
-    """Two growing chunks retain both outputs and reuse every split-grid program hash."""
+    """Two growing chunks retain both outputs and reuse every split-grid/format program hash."""
     seq_len, chunk = 512, 256
     config = config_only
     config.max_seq_len = seq_len
@@ -679,13 +692,14 @@ def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
         is_chunked=True,
         active_seq_len=chunk,
         sparse_mla_overlap_profile="qb2_80_30",
+        sparse_kv_cache_format=cache_format,
     )
     resources = mla._sparse_mla_overlap
     assert resources is not None
 
     def run_chunks(overlap):
         mla._sparse_mla_overlap = resources if overlap else None
-        kvpe_cache = _new_kvpe(config, mesh_device, mesh_shape, seq_len)
+        kvpe_cache = _new_kvpe(config, mesh_device, mesh_shape, seq_len, cache_format)
         index_kv_cache = _new_index_kv(config, mesh_device, mesh_shape, seq_len)
         device_outputs = []
         for start in range(0, seq_len, chunk):
@@ -730,9 +744,10 @@ def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
         for chunk_idx, (expected, actual) in enumerate(zip(serial, actual_chunks)):
             passed, pcc = comp_pcc(expected, actual, 0.999)
             logger.info(
-                f"[glm_5_2] sparse MLA growing-prefix serial vs QB2 80/30 {run_name} " f"chunk {chunk_idx} PCC: {pcc}"
+                f"[glm_5_2/{cache_format.name}] sparse MLA growing-prefix serial vs QB2 80/30 {run_name} "
+                f"chunk {chunk_idx} PCC: {pcc}"
             )
-            assert passed, f"GLM-5.2 {run_name} overlap chunk {chunk_idx} diverged: PCC={pcc}"
+            assert passed, f"GLM-5.2/{cache_format.name} {run_name} overlap chunk {chunk_idx} diverged: PCC={pcc}"
 
 
 @pytest.mark.parametrize(

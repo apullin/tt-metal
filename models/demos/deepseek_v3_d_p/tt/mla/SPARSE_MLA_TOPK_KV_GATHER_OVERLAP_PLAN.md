@@ -665,6 +665,7 @@ Production acceptance requires all of:
 - [x] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
 - [x] sparse-MLA overlap integration and serial fallback
 - [x] QB2 correctness, growing-prefix lifetime, repeated semaphore, and cache-hit coverage
+- [x] QB2 BF16 and scaled-FP8 growing-prefix overlap correctness
 - [x] QB2 Tensix Watcher stress for independent top-k/gather progress
 - [ ] Watcher/deadlock stress on LoudBox/Galaxy
 - [x] matched-mesh whole-forward completion-event net-win gate and manifest plumbing
@@ -688,17 +689,21 @@ allowlist, join-before-TP-redistribution order, exception recovery, and exact
 `high_bw_all_gather` resource arguments.
 
 This is functional QB2 qualification only. 80/40 performance, production-long
-prefixes, Watcher stress, scaled-FP8, and a passing whole-forward net-win gate
-remain open for LoudBox/Galaxy Phase 6 runs.
+prefixes, full-model Watcher stress, production-scale scaled-FP8 performance,
+and a passing whole-forward net-win gate remain open for LoudBox/Galaxy Phase 6
+runs.
 
 The follow-up QB2 integration test
 `test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime` runs two
-256-token chunks against one 512-token cache. It deliberately retains both
-device outputs until the second overlap region and its full-grid consumers
-complete, asserts distinct output allocations, then reads both back. Serial,
-cold-overlap, and warm-cache-overlap outputs match at PCC 1.0 for both the
-256-token and 512-token populated prefixes. The second overlap pass adds no
-program-cache entries.
+256-token chunks against one 512-token cache in both BF16-RM and scaled-FP8
+KVPE formats. It deliberately retains both device outputs until the second
+overlap region and its full-grid consumers complete, asserts distinct output
+allocations, then reads both back. Serial, cold-overlap, and
+warm-cache-overlap outputs match at PCC 1.0 for both the 256-token and
+512-token populated prefixes in each format. The second overlap pass adds no
+program-cache entries. A separate scaled-FP8 qualification-harness smoke run
+also completed the exact 80/30 route and emitted the format-specific manifest;
+it is execution evidence, not a production performance result.
 
 The standalone operation test now proves independent device progress without
 depending on profiler delivery: after enqueueing a production-proxy 80-core
