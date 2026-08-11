@@ -715,6 +715,26 @@ the earlier top-k. The same run validates exact top-k and gather outputs; the
 adjacent tests cover 100-call semaphore reuse, cache-hit semaphore-address
 rebinding, and all interface validation failures.
 
+The completed Phase 2 op suite now also runs caller-owned resources through
+all eight combinations of the qualified line/ring schedules and BF16 row,
+scaled-FP8 row, BF16 tile, and BF8 tile payloads, with exact decoded output
+comparison. The first external-path cache miss leaves both L1 and L1-small
+allocator totals unchanged. A separate 100-call test alternates selected batch
+and growing/shrinking prefix controls, checks every produced slice, and keeps a
+single cache entry. The pair-rebind test covers one miss plus 99 hits, poisons
+the old pair to prove current handle addresses are rebound, and resets/reuses
+the pair to model exception recovery. Validation covers paired/distinct
+handles, L1-small type, worker coverage, loaded sub-device membership, grid
+containment, undersized grids, and the implicit default full grid on QB2; the
+wrong-parent-mesh case runs when the line is a natural LoudBox/Galaxy submesh.
+The shared C++ scheduler test pins 40 cores to the eight-worker tier (36 active
+cores), 30 cores to the four-worker tier (20 active cores), admits the current
+two-worker GLM runtime schedule in either strip (12 active cores), and fails
+closed below the four-core minimum. Together with the source-level external
+factory branch, which contains neither semaphore allocation nor
+`Synchronize`, the cache-miss allocator assertion and gather-scoped event are
+the direct no-hidden-allocation/no-other-subdevice-drain evidence.
+
 The same independent-progress test passes with Tensix Watcher enabled via
 `TT_METAL_WATCHER=1 TT_METAL_WATCHER_DISABLE_ETH=1`: the gather-scoped event
 completed in 0.595 ms while the isolated 80-core top-k lower bound was 2.445

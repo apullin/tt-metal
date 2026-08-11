@@ -39,6 +39,7 @@ set(UNIT_TESTS_TTNN_BASIC_SOURCES
     test_gelu_fw_ulp.cpp
     test_tanh_bw_ulp.cpp
     test_tanh_fw_ulp.cpp
+    test_high_bw_all_gather_scheduler.cpp
     test_topk_large_indices.cpp
 )
 
