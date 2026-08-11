@@ -1021,11 +1021,11 @@
 # model_location_generator / torchvision (/mnt/MLPerf/tt_dnn-models, mounted whole for
 # WH SKUs) and need no override.
 
-- name: VGG e2e tests
+- name: VGGNet e2e tests
   cmd: |
     pytest --timeout 540 models/demos/vision/classification/vgg/demo/demo.py
-  model: vgg
-  model_family: VGG
+  model: vggnet
+  model_family: VGGNet
   skus:
     # 7.7 min measured (run 31393369681) + ~15% -> 9.
     wh_n150:
@@ -1051,14 +1051,14 @@
 # The legacy helper ran batch_7 and batch_8 with `|| fail=1` and exited non-zero at
 # the end, so both always ran. The registry cmd runs under `bash -e`, which would
 # abort at the first failure — the exit_code accumulator preserves the old behaviour.
-- name: metal BERT large 11 e2e tests
+- name: BERT-Large e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
     exit_code=0
     pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
     pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
     exit $exit_code
-  model: metal-bert-large-11
+  model: bert-large
   model_family: BERT
   skus:
     # 11.6 min measured (run 31393369681) + ~15% -> 14.
@@ -1096,11 +1096,11 @@
   owner_id: U07D5N7QL4U # Joseph Chu
   team: models
 
-- name: MNIST e2e tests
+- name: MNIST MLP e2e tests
   cmd: |
     pytest --timeout 420 models/demos/vision/classification/mnist/demo/demo.py
-  model: mnist
-  model_family: MNIST
+  model: mnist-mlp
+  model_family: MNIST MLP
   skus:
     # 6.0 min measured (run 31393369681) + ~15% -> 7.
     wh_n150:

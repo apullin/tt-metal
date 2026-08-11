@@ -31,12 +31,12 @@ on:
           - gemma-4-e4b
           - panoptic-deeplab
           - mistral-small-3.1-24b
-          - vgg
+          - vggnet
           - bert-tiny
-          - metal-bert-large-11
+          - bert-large
           - distilbert
           - squeezebert
-          - mnist
+          - mnist-mlp
           - resnet50
       sku:
         description: "Select SKU to test (not all models are configured for all SKUs. If a combination is non-existent no test will be run)"

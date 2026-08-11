@@ -305,14 +305,14 @@
 # jobs never hit. Turning the watcher on for these two is a follow-up, not part of this
 # move.
 
-- name: metal BERT large 11 unit tests
+- name: BERT-Large unit tests
   cmd: |
     unset TT_METAL_WATCHER
     export HF_HUB_OFFLINE=0
     pytest --timeout 480 \
       models/demos/metal_BERT_large_11/tests/test_bert_batch_dram.py \
       models/demos/metal_BERT_large_11/tests/test_demo.py
-  model: metal-bert-large-11
+  model: bert-large
   model_family: BERT
   skus:
     # `common_models nightly [wh_n150]` wall-clock over runs 31461711973 / 31359025244 /

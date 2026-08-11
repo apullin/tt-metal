@@ -1532,8 +1532,8 @@ targets:
   # batches (metal BERT large 11 alone runs batch_7 and batch_8 in one job), and with no
   # payload to match there is nothing for a per-batch entry to resolve against.
 
-  vgg:
-    aliases: ["VGG", "vgg", "vgg11", "vgg16"]
+  vggnet:
+    aliases: ["VGGNet", "vggnet", "VGG", "vgg", "vgg11", "vgg16"]
     skus:
       wh_n150:
         entries:
@@ -1558,8 +1558,8 @@ targets:
             owner_id: U024A4EFV6U # Brian Liu
             team: models
 
-  metal-bert-large-11:
-    aliases: ["metal BERT large 11", "metal_BERT_large_11", "metal-bert-large-11", "phiyodr/bert-large-finetuned-squad2"]
+  bert-large:
+    aliases: ["BERT-Large", "bert-large", "metal_BERT_large_11", "phiyodr/bert-large-finetuned-squad2"]
     skus:
       wh_n150:
         entries:
@@ -1597,8 +1597,8 @@ targets:
             owner_id: U07D5N7QL4U # Joseph Chu
             team: models
 
-  mnist:
-    aliases: ["MNIST", "mnist"]
+  mnist-mlp:
+    aliases: ["MNIST MLP", "mnist-mlp", "MnistModel", "mnist"]
     skus:
       wh_n150:
         entries:
