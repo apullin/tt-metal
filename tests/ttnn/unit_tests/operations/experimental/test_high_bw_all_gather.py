@@ -820,6 +820,269 @@ def test_high_bw_all_gather_selected_batch_prefix(mesh_device):
                 )
 
 
+def _make_external_semaphore_test_tensors(mesh_device, cluster_axis):
+    axis_size = mesh_device.shape[cluster_axis]
+    local_rows, width = 128, 576
+    torch.manual_seed(0)
+    host_input = torch.rand((1, 1, local_rows * axis_size, width), dtype=torch.bfloat16)
+    device_input = _make_tensor(
+        mesh_device,
+        host_input,
+        ttnn.bfloat16,
+        ttnn.ROW_MAJOR_LAYOUT,
+        ttnn.ShardTensor2dMesh(
+            mesh_device,
+            dims=(2, None) if cluster_axis == 0 else (None, 2),
+            mesh_shape=tuple(mesh_device.shape),
+        ),
+    )
+    persistent_output = _make_tensor(
+        mesh_device,
+        torch.zeros((1, 1, local_rows * axis_size, width), dtype=torch.bfloat16),
+        ttnn.bfloat16,
+        ttnn.ROW_MAJOR_LAYOUT,
+        ttnn.ReplicateTensorToMesh(mesh_device),
+    )
+    return device_input, persistent_output
+
+
+def _load_external_semaphore_test_subdevices(mesh_device):
+    grid = mesh_device.compute_with_storage_grid_size()
+    assert grid.x > 4, "external-semaphore coverage requires separate compute and gather strips"
+    gather_start_x = grid.x - 4
+    compute_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(gather_start_x - 1, grid.y - 1))]
+    )
+    gather_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(gather_start_x, 0), ttnn.CoreCoord(grid.x - 1, grid.y - 1))]
+    )
+    manager = mesh_device.create_sub_device_manager(
+        [ttnn.SubDevice([compute_grid]), ttnn.SubDevice([gather_grid])],
+        0,
+    )
+    mesh_device.load_sub_device_manager(manager)
+    return gather_grid, ttnn.SubDeviceId(1), manager
+
+
+def _make_l1_small_semaphore_pair(mesh_device, cores):
+    return (
+        ttnn.create_global_semaphore(mesh_device, cores, 0, ttnn.BufferType.L1_SMALL),
+        ttnn.create_global_semaphore(mesh_device, cores, 0, ttnn.BufferType.L1_SMALL),
+    )
+
+
+@run_for_blackhole("high_bw_all_gather external semaphores require Blackhole fabric")
+@pytest.mark.parametrize("device_params", [_FABRIC_2D_LINE_DEVICE_PARAMS], indirect=True)
+def test_high_bw_all_gather_external_semaphore_reuse_and_cache_rebind(mesh_device):
+    """Caller-owned semaphores support restricted-subdevice reuse and cache-hit address rebinding."""
+    rank_line, cluster_axis = _rank_line_mesh(mesh_device)
+    device_input, persistent_output = _make_external_semaphore_test_tensors(rank_line, cluster_axis)
+    _, rebound_output = _make_external_semaphore_test_tensors(rank_line, cluster_axis)
+
+    legacy_output = ttnn.experimental.high_bw_all_gather(
+        device_input,
+        dim=2,
+        output_tensor=persistent_output,
+        cluster_axis=cluster_axis,
+        num_links=_NUM_LINKS,
+    )
+    ttnn.synchronize_device(rank_line)
+    _assert_exact_all_gather(device_input, legacy_output, rank_line, ttnn.bfloat16)
+
+    gather_grid, gather_subdevice_id, manager = _load_external_semaphore_test_subdevices(rank_line)
+    try:
+        first_pair = _make_l1_small_semaphore_pair(rank_line, gather_grid)
+        # The caller owns readiness for externally allocated mesh-wide resources.
+        ttnn.synchronize_device(rank_line)
+
+        def run(semaphores, output=persistent_output):
+            return ttnn.experimental.high_bw_all_gather(
+                device_input,
+                dim=2,
+                output_tensor=output,
+                cluster_axis=cluster_axis,
+                subdevice_id=gather_subdevice_id,
+                sub_core_grids=gather_grid,
+                num_links=_NUM_LINKS,
+                ready_semaphore=semaphores[0],
+                data_valid_semaphore=semaphores[1],
+            )
+
+        # Adjacent invocations prove that successful kernels consume both semaphore counts back to zero.
+        for _ in range(100):
+            run(first_pair)
+        ttnn.synchronize_device(rank_line, sub_device_ids=[gather_subdevice_id])
+        cache_entries = rank_line.num_program_cache_entries()
+
+        second_pair = _make_l1_small_semaphore_pair(rank_line, gather_grid)
+        ttnn.synchronize_device(rank_line)
+        # Poison the old pair. A cache hit that fails to rebind current addresses cannot silently
+        # succeed using the still-live pair retained by the cached workload.
+        ttnn.reset_global_semaphore_value(first_pair[0], 17)
+        ttnn.reset_global_semaphore_value(first_pair[1], 17)
+        ttnn.synchronize_device(rank_line)
+        run(second_pair, rebound_output)
+        ttnn.synchronize_device(rank_line, sub_device_ids=[gather_subdevice_id])
+        assert rank_line.num_program_cache_entries() == cache_entries
+        _assert_exact_all_gather(device_input, rebound_output, rank_line, ttnn.bfloat16)
+    finally:
+        ttnn.synchronize_device(rank_line)
+        rank_line.clear_loaded_sub_device_manager()
+        rank_line.remove_sub_device_manager(manager)
+
+
+@run_for_blackhole("high_bw_all_gather external semaphores require Blackhole fabric")
+@pytest.mark.parametrize("device_params", [_FABRIC_2D_LINE_DEVICE_PARAMS], indirect=True)
+def test_high_bw_all_gather_external_semaphore_validation(mesh_device, expect_error):
+    """The external-resource interface rejects unsafe handle and core-grid combinations before dispatch."""
+    rank_line, cluster_axis = _rank_line_mesh(mesh_device)
+    device_input, persistent_output = _make_external_semaphore_test_tensors(rank_line, cluster_axis)
+    gather_grid, gather_subdevice_id, manager = _load_external_semaphore_test_subdevices(rank_line)
+    valid_pair = _make_l1_small_semaphore_pair(rank_line, gather_grid)
+
+    def run(
+        *,
+        ready_semaphore=None,
+        data_valid_semaphore=None,
+        sub_core_grids=gather_grid,
+        subdevice_id=gather_subdevice_id,
+    ):
+        return ttnn.experimental.high_bw_all_gather(
+            device_input,
+            dim=2,
+            output_tensor=persistent_output,
+            cluster_axis=cluster_axis,
+            subdevice_id=subdevice_id,
+            sub_core_grids=sub_core_grids,
+            num_links=_NUM_LINKS,
+            ready_semaphore=ready_semaphore,
+            data_valid_semaphore=data_valid_semaphore,
+        )
+
+    try:
+        with expect_error(RuntimeError, "must be supplied together"):
+            run(ready_semaphore=valid_pair[0])
+        with expect_error(RuntimeError, "must be distinct"):
+            run(ready_semaphore=valid_pair[0], data_valid_semaphore=valid_pair[0])
+
+        wrong_type_pair = (
+            ttnn.create_global_semaphore(rank_line, gather_grid, 0, ttnn.BufferType.L1),
+            ttnn.create_global_semaphore(rank_line, gather_grid, 0, ttnn.BufferType.L1),
+        )
+        with expect_error(RuntimeError, "must use buffer type"):
+            run(ready_semaphore=wrong_type_pair[0], data_valid_semaphore=wrong_type_pair[1])
+
+        gather_box = gather_grid.bounding_box()
+        one_core = ttnn.CoreRangeSet([ttnn.CoreRange(gather_box.start, gather_box.start)])
+        undersized_pair = _make_l1_small_semaphore_pair(rank_line, one_core)
+        with expect_error(RuntimeError, "must cover all selected reader/writer cores"):
+            run(ready_semaphore=undersized_pair[0], data_valid_semaphore=undersized_pair[1])
+
+        device_grid = rank_line.compute_with_storage_grid_size()
+        escaped_grid = ttnn.CoreRangeSet(
+            [
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(gather_box.start.x - 1, 0),
+                    ttnn.CoreCoord(device_grid.x - 1, device_grid.y - 1),
+                )
+            ]
+        )
+        with expect_error(RuntimeError, "must be fully contained"):
+            run(
+                ready_semaphore=valid_pair[0],
+                data_valid_semaphore=valid_pair[1],
+                sub_core_grids=escaped_grid,
+            )
+
+        with expect_error(RuntimeError, "is not part of active subdevice manager"):
+            run(
+                ready_semaphore=valid_pair[0],
+                data_valid_semaphore=valid_pair[1],
+                subdevice_id=ttnn.SubDeviceId(2),
+            )
+
+        one_core_pair = _make_l1_small_semaphore_pair(rank_line, one_core)
+        with expect_error(RuntimeError, "needs at least"):
+            run(
+                ready_semaphore=one_core_pair[0],
+                data_valid_semaphore=one_core_pair[1],
+                sub_core_grids=one_core,
+            )
+    finally:
+        ttnn.synchronize_device(rank_line)
+        rank_line.clear_loaded_sub_device_manager()
+        rank_line.remove_sub_device_manager(manager)
+
+    full_grid = ttnn.CoreRangeSet(
+        [
+            ttnn.CoreRange(
+                ttnn.CoreCoord(0, 0),
+                ttnn.CoreCoord(
+                    rank_line.compute_with_storage_grid_size().x - 1,
+                    rank_line.compute_with_storage_grid_size().y - 1,
+                ),
+            )
+        ]
+    )
+    full_grid_pair = _make_l1_small_semaphore_pair(rank_line, full_grid)
+    ttnn.synchronize_device(rank_line)
+    default_grid_output = ttnn.experimental.high_bw_all_gather(
+        device_input,
+        dim=2,
+        output_tensor=persistent_output,
+        cluster_axis=cluster_axis,
+        num_links=_NUM_LINKS,
+        ready_semaphore=full_grid_pair[0],
+        data_valid_semaphore=full_grid_pair[1],
+    )
+    ttnn.synchronize_device(rank_line)
+    _assert_exact_all_gather(device_input, default_grid_output, rank_line, ttnn.bfloat16)
+
+    # Omitted sub_core_grids resolve into the program hash. Reusing SubDeviceId(0)
+    # under a different active manager must compile for the new physical grid.
+    grid_size = rank_line.compute_with_storage_grid_size()
+    left_grid = ttnn.CoreRangeSet([ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(3, grid_size.y - 1))])
+    right_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(grid_size.x - 4, 0), ttnn.CoreCoord(grid_size.x - 1, grid_size.y - 1))]
+    )
+    left_manager = rank_line.create_sub_device_manager([ttnn.SubDevice([left_grid])], 0)
+    right_manager = rank_line.create_sub_device_manager([ttnn.SubDevice([right_grid])], 0)
+    try:
+        rank_line.load_sub_device_manager(left_manager)
+        ttnn.experimental.high_bw_all_gather(
+            device_input,
+            dim=2,
+            output_tensor=persistent_output,
+            cluster_axis=cluster_axis,
+            subdevice_id=ttnn.SubDeviceId(0),
+            num_links=_NUM_LINKS,
+            ready_semaphore=full_grid_pair[0],
+            data_valid_semaphore=full_grid_pair[1],
+        )
+        ttnn.synchronize_device(rank_line)
+        entries_after_left = rank_line.num_program_cache_entries()
+
+        rank_line.load_sub_device_manager(right_manager)
+        manager_switched_output = ttnn.experimental.high_bw_all_gather(
+            device_input,
+            dim=2,
+            output_tensor=persistent_output,
+            cluster_axis=cluster_axis,
+            subdevice_id=ttnn.SubDeviceId(0),
+            num_links=_NUM_LINKS,
+            ready_semaphore=full_grid_pair[0],
+            data_valid_semaphore=full_grid_pair[1],
+        )
+        ttnn.synchronize_device(rank_line)
+        assert rank_line.num_program_cache_entries() > entries_after_left
+        _assert_exact_all_gather(device_input, manager_switched_output, rank_line, ttnn.bfloat16)
+    finally:
+        ttnn.synchronize_device(rank_line)
+        rank_line.clear_loaded_sub_device_manager()
+        rank_line.remove_sub_device_manager(left_manager)
+        rank_line.remove_sub_device_manager(right_manager)
+
+
 @run_for_blackhole("high_bw_all_gather requires Blackhole fabric")
 @pytest.mark.parametrize("device_params", [_FABRIC_2D_TORUS_XY_DEVICE_PARAMS], indirect=True)
 def test_high_bw_all_gather_ragged_accuracy(mesh_device):
