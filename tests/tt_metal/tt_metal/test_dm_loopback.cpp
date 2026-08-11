@@ -21,7 +21,7 @@ using namespace tt;
 using namespace tt::tt_metal;
 
 // This test requires simulator environment
-TEST_F(QuasarUnitMeshFixture, DmLoopback) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, DmLoopback) {
     // Skip if simulator is not available
     char* env_var = std::getenv("TT_METAL_SIMULATOR");
     if (env_var == nullptr) {

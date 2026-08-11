@@ -110,7 +110,7 @@ distributed::MeshWorkload create_workload(
 
 }  // namespace
 
-TEST_F(QuasarUnitMeshFixture, TestSingleWorkloadNonBlockingEnqueueFinish) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, TestSingleWorkloadNonBlockingEnqueueFinish) {
     if (!MetalContext::instance().rtoptions().is_simulator_or_emulated()) {
         GTEST_SKIP() << "This test can only be run under the simulator or emulator. "
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
@@ -146,7 +146,7 @@ TEST_F(QuasarUnitMeshFixture, TestSingleWorkloadNonBlockingEnqueueFinish) {
     ASSERT_EQ(compute_output, kExpectedComputeValues);
 }
 
-TEST_F(QuasarUnitMeshFixture, TestMultipleWorkloadsNonBlockingEnqueueFinish) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, TestMultipleWorkloadsNonBlockingEnqueueFinish) {
     if (!MetalContext::instance().rtoptions().is_simulator_or_emulated()) {
         GTEST_SKIP() << "This test can only be run under the simulator or emulator. "
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";
@@ -199,7 +199,7 @@ TEST_F(QuasarUnitMeshFixture, TestMultipleWorkloadsNonBlockingEnqueueFinish) {
     }
 }
 
-TEST_F(QuasarMultiCQUnitMeshFixture, TestInterleavedWorkloadsAcrossTwoCQs) {
+TEST_F(QuasarMultiCQMeshDeviceSingleCardFixture, TestInterleavedWorkloadsAcrossTwoCQs) {
     if (!MetalContext::instance().rtoptions().is_simulator_or_emulated()) {
         GTEST_SKIP() << "This test can only be run under the simulator or emulator. "
                         "Set TT_METAL_SIMULATOR or TT_METAL_EMULE_MODE=1.";

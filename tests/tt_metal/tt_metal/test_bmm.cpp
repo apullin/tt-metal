@@ -274,7 +274,7 @@ TEST_F(AnyDispatchMeshDeviceSingleCardFixture, Bmm) {
 
 // This needs to be a separate test because we don't have a way of querying the correct compute grid size
 // when running a multi-neo emu/sim build. Otherwise its the same test with batch split across nodes.
-TEST_F(QuasarUnitMeshFixture, BmmMultinode) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, BmmMultinode) {
     if (this->device().compute_with_storage_grid_size().x < 2) {
         GTEST_SKIP() << "This test requires at least 2 worker nodes.";
     }
@@ -293,7 +293,7 @@ TEST_F(QuasarUnitMeshFixture, BmmMultinode) {
     const experimental::NodeCoord node1{1, 0};
     const experimental::NodeRange node_range{node0, node1};
 
-    // QuasarUnitMeshFixture only opens Quasar devices, so implicit sync is always on.
+    // QuasarMeshDeviceSingleCardFixture only opens Quasar devices, so implicit sync is always on.
     auto spec = build_bmm_program_spec(p, tensors, node_range, /*use_implicit_sync=*/true);
     auto program = experimental::MakeProgramFromSpec(this->device(), spec);
 

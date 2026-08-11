@@ -66,7 +66,7 @@ unit_tests_legacy:
     env:
       TT_METAL_TENSIX_DISPATCH_CORES: 1
 
-  - filter: "*QuasarMultiCQUnitMeshFixture*"
+  - filter: "*QuasarMultiCQMeshDeviceSingleCardFixture*"
     config: 2x3
     back2back: true
     env:
@@ -93,15 +93,15 @@ unit_tests_legacy:
     config: 2x3_DISPATCH
     back2back: true
 
-  - filter: "*QuasarUnitMeshFixture*GlobalsAndTLS"
+  - filter: "*QuasarMeshDeviceSingleCardFixture*GlobalsAndTLS"
     config: 2x3_DISPATCH
     back2back: true
 
-  - filter: "*QuasarUnitMeshFixture.QuasarComputeKernelTLS*"
+  - filter: "*QuasarMeshDeviceSingleCardFixture.QuasarComputeKernelTLS*"
     config: 2x3_DISPATCH
     back2back: true
 
-    # - filter: "QuasarUnitMeshFixture.QuasarMultiSemaphorePipeline"
+    # - filter: "QuasarMeshDeviceSingleCardFixture.QuasarMultiSemaphorePipeline"
   #   config: 1x3
   #   back2back: true
   #   env:

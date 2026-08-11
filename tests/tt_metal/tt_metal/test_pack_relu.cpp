@@ -200,13 +200,13 @@ void run_pack_relu_test(
 }
 
 // ZERO_RELU: max(0, x)
-TEST_F(QuasarUnitMeshFixture, PackReluZero) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, PackReluZero) {
     run_pack_relu_test(
         this->device(), make_relu_config(PackReluMode::ZERO_RELU), [](float x) { return std::max(0.0f, x); });
 }
 
 // MIN_THRESHOLD_RELU: x <= threshold ? 0 : x (threshold = 0.25)
-TEST_F(QuasarUnitMeshFixture, PackReluMinThreshold) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, PackReluMinThreshold) {
     const float threshold = 0.25f;
     run_pack_relu_test(
         this->device(), make_relu_config(PackReluMode::MIN_THRESHOLD_RELU, threshold), [threshold](float x) {
@@ -215,7 +215,7 @@ TEST_F(QuasarUnitMeshFixture, PackReluMinThreshold) {
 }
 
 // MAX_THRESHOLD_RELU: clamp to [0, threshold] (threshold = 0.5)
-TEST_F(QuasarUnitMeshFixture, PackReluMaxThreshold) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, PackReluMaxThreshold) {
     const float threshold = 0.5f;
     run_pack_relu_test(
         this->device(), make_relu_config(PackReluMode::MAX_THRESHOLD_RELU, threshold), [threshold](float x) {

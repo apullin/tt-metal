@@ -1307,7 +1307,7 @@ TEST_F(LLKQuasarMeshDeviceSingleCardFixture, QuasarComputePackUntilizeDstTinyTil
 }
 
 // Quasar Unpack Tilize
-TEST_F(QuasarUnitMeshFixture, QuasarComputeUnpackTilize) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilize) {
     std::vector<vector<std::uint32_t>> test_configs = {{1, 4}, {5, 3}, {2, 10}};
     for (auto& cfg : test_configs) {
         for (bool dst_full_sync_en : {true, false}) {
@@ -1384,7 +1384,7 @@ TEST_F(LLKQuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeTinyTileCr
 
 // Quasar Unpack TilizeA_B (tilize + reduce col max)
 // Quasar's unpack_tilizeA_B is only compatible with the reduce math kernel.
-TEST_F(QuasarUnitMeshFixture, QuasarComputeUnpackTilizeA_B) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeA_B) {
     for (bool dst_full_sync_en : {true, false}) {
         for (bool fp32_dest_acc_en : {true, false}) {
             for (tt::DataFormat input_data_format : {tt::DataFormat::Float16_b}) {

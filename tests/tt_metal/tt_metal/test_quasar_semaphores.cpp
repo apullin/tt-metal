@@ -21,7 +21,7 @@ using namespace tt;
 using namespace tt::tt_metal;
 
 // This test requires simulator environment
-TEST_F(QuasarUnitMeshFixture, QuasarMultiSemaphorePipeline) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarMultiSemaphorePipeline) {
     // Skip if simulator is not available
     if (!MetalContext::instance().rtoptions().is_simulator_or_emulated()) {
         GTEST_SKIP() << "This test can only be run under the simulator or emulator. "
@@ -157,7 +157,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarMultiSemaphorePipeline) {
 }
 
 // This test requires simulator environment
-TEST_F(QuasarUnitMeshFixture, QuasarMultipleClustersMultiSemaphorePipeline) {
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarMultipleClustersMultiSemaphorePipeline) {
     // Skip if simulator is not available
     if (!MetalContext::instance().rtoptions().is_simulator_or_emulated()) {
         GTEST_SKIP() << "This test can only be run under the simulator or emulator. "
