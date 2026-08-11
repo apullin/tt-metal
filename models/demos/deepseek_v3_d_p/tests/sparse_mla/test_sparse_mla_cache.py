@@ -28,6 +28,7 @@ from models.demos.deepseek_v3_d_p.reference.cpu_deepseek_v32 import random_mla_w
 from models.demos.deepseek_v3_d_p.reference.glm_5_2_config import GLM52Config, glm_5_2_hf_config
 from models.demos.deepseek_v3_d_p.tt.mla import ttMLA
 from models.demos.deepseek_v3_d_p.tt.mla.indexer import (
+    IndexerSelectionState,
     ReuseIndexer,
     TtIndexer,
     indexer_layer_is_reused,
@@ -128,6 +129,61 @@ def test_reuse_indexer_forward_raises(expect_error):
     rather than silently return None (which would drop the layer to a dense path)."""
     with expect_error(RuntimeError, "reused top-k"):
         ReuseIndexer().forward()
+
+
+def test_indexer_selection_stages_thread_runtime_metadata(monkeypatch):
+    """Host-only contract test for the overlap seam: local selection forwards the score state's
+    runtime bound and core selection, while TP=1 finalization is an identity."""
+    indexer = object.__new__(TtIndexer)
+    indexer.index_topk_capacity = 512
+    logits = object()
+    local_indices = object()
+    core_grid = object()
+    subdevice_id = object()
+    captured = {}
+
+    def fake_topk(input_tensor, **kwargs):
+        captured["input"] = input_tensor
+        captured.update(kwargs)
+        return local_indices
+
+    monkeypatch.setattr(ttnn.experimental, "topk_large_indices", fake_topk)
+    state = IndexerSelectionState(logits, topk_valid_length=768, requires_tp_redistribution=False)
+
+    selected = indexer.select_local(state, subdevice_id=subdevice_id, sub_core_grids=core_grid)
+    assert selected is local_indices
+    assert captured == {
+        "input": logits,
+        "k": 512,
+        "valid_length": 768,
+        "subdevice_id": subdevice_id,
+        "sub_core_grids": core_grid,
+    }
+    assert indexer.finalize_distribution(selected, state) is local_indices
+
+
+def test_indexer_forward_is_sequential_stage_wrapper(monkeypatch):
+    """The compatibility API remains score -> local select -> TP distribution in that order."""
+    indexer = object.__new__(TtIndexer)
+    state = object()
+    local_indices = object()
+    final_indices = object()
+    calls = []
+
+    monkeypatch.setattr(indexer, "score", lambda *args, **kwargs: calls.append("score") or state)
+    monkeypatch.setattr(
+        indexer,
+        "select_local",
+        lambda actual_state: calls.append(("select_local", actual_state)) or local_indices,
+    )
+    monkeypatch.setattr(
+        indexer,
+        "finalize_distribution",
+        lambda actual_indices, actual_state: calls.append(("finalize", actual_indices, actual_state)) or final_indices,
+    )
+
+    assert indexer.forward(object(), object(), 32) is final_indices
+    assert calls == ["score", ("select_local", state), ("finalize", local_indices, state)]
 
 
 def test_matches_config_rejects_dense():

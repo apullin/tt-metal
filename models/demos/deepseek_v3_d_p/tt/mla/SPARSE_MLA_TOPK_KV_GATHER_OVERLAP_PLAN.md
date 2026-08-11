@@ -661,7 +661,7 @@ Production acceptance requires all of:
 - [ ] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
 - [ ] exact-hash warmup and cold-cache serialization coverage
 - [ ] 30-versus-40-core gather tier measurements
-- [ ] split indexer score/select/finalize API with serial wrapper
+- [x] split indexer score/select/finalize API with serial wrapper
 - [ ] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
 - [ ] sparse-MLA overlap integration and serial fallback
 - [ ] correctness, Watcher, deadlock, lifetime, and cache-hit coverage
