@@ -1119,7 +1119,7 @@
     wh_n150:
       timeout: 11
       tier: 3
-  owner_id: U0837MYG788 # Marko Radosavljevic
+  owner_id: U03PUAKE719 # Miguel Tairum Cruz
   team: models
 
 # Kept separate from the ResNet-50 e2e entry above so the two carry their own
@@ -1136,7 +1136,7 @@
     wh_n150:
       timeout: 8
       tier: 3
-  owner_id: U0837MYG788 # Marko Radosavljevic
+  owner_id: U03PUAKE719 # Miguel Tairum Cruz
   team: models
 
 # Ported from the `t3k_resnet50_tests` entry in t3k_demo_tests.yaml (cmd
