@@ -1119,7 +1119,7 @@
     wh_n150:
       timeout: 11
       tier: 3
-  owner_id: U03PUAKE719 # Miguel Tairum Cruz
+  owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
 
 # Kept separate from the ResNet-50 e2e entry above so the two carry their own
@@ -1136,7 +1136,7 @@
     wh_n150:
       timeout: 8
       tier: 3
-  owner_id: U03PUAKE719 # Miguel Tairum Cruz
+  owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
 
 # Ported from the `t3k_resnet50_tests` entry in t3k_demo_tests.yaml (cmd
@@ -1153,7 +1153,7 @@
     wh_llmbox_perf:
       timeout: 10
       tier: 3
-  owner_id: U03PUAKE719 # Miguel Tairum Cruz
+  owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
 
 - name: TT-DiT Wan2.2-T2V-A14B e2e tests (BH QuietBox 2)
