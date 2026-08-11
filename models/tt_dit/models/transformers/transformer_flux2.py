@@ -29,53 +29,18 @@ if TYPE_CHECKING:
     from ...utils.padding import PaddingConfig
 
 
-class Flux2Modulation(Module):
-    """Produces (shift, scale, gate) triples from the time embedding, one triple per modulation set.
-
-    The scale outputs are consumed as ``1 + scale`` (the norms compute ``(1 + scale) * x + shift``).
-    That constant is folded into the linear's bias rather than added afterwards, so it lands in the
-    matmul's fp32 accumulator instead of costing an eltwise op per block per step. ``out_dtype``
-    lets a caller whose consumers all want bf16 have the matmul pack bf16 directly instead of
-    emitting fp32 and typecasting.
-    """
-
-    def __init__(
-        self,
-        dim: int,
-        *,
-        mod_param_sets: int,
-        tp_axis: int | None,
-        device: ttnn.MeshDevice,
-        out_dtype: ttnn.DataType | None = None,
-    ) -> None:
-        super().__init__()
-
-        self.linear = ColParallelLinear(
-            dim, dim * 3 * mod_param_sets, bias=True, mesh_axis=tp_axis, mesh_device=device, chunks=3 * mod_param_sets
-        )
-
-        self._dim = dim
-        self._mod_param_sets = mod_param_sets
-        self._tp_factor = device.shape[tp_axis] if tp_axis is not None else 1
-        self._out_dtype = out_dtype
-
-    def forward(self, x: torch.Tensor, *, skip_act_fn: bool = False) -> tuple[torch.Tensor, ...]:
-        assert len(x.shape) == 3
-
-        if not skip_act_fn:
-            x = ttnn.silu(x)
-
-        return self.linear(x, dtype=self._out_dtype)
-
-    def _prepare_torch_state(self, state: dict[str, torch.Tensor]) -> None:
-        # Add the `+1` into the bias on every scale chunk. Chunks are laid out (shift, scale, gate)
-        # per set, so only index 1 of each triple is ones. prepare_chunked_linear_output applies the
-        # same device permutation to bias as to weight, so this stays in pre-permutation checkpoint
-        # order. FLUX.2 ships this layer bias-free, hence the zeros default.
-        chunks = 3 * self._mod_param_sets
-        ones_on_scale = torch.cat([torch.full([self._dim], 1.0 if i % 3 == 1 else 0.0) for i in range(chunks)])
-        state["linear.bias"] = state.get("linear.bias", torch.zeros(chunks * self._dim)) + ones_on_scale
-        prepare_chunked_linear_output(state, prefix="linear", device_count=self._tp_factor, chunks=chunks)
+# Every time-embedding projection in the transformer consumes the same `time_embed`, so they are
+# merged into one chunked matmul. This table is the single source of truth for that merge: the
+# checkpoint prefix each group comes from, how many chunks it contributes, and which of its chunks
+# are `scale` (those get the consumers' `+1` folded into the bias). Row order here is the chunk
+# order of the merged weight, which is also the order `forward` unpacks.
+_TIME_MOD_SOURCES = (
+    ("double_stream_modulation_img.linear", 6, (1, 4)),  # (shift, scale, gate) x attn, ff
+    ("double_stream_modulation_txt.linear", 6, (1, 4)),
+    ("single_stream_modulation.linear", 3, (1,)),  # (shift, scale, gate)
+    ("norm_out.linear", 2, (0,)),  # (scale, shift)
+)
+_TIME_MOD_CHUNKS = sum(count for _, count, _ in _TIME_MOD_SOURCES)
 
 
 # adapted from https://github.com/huggingface/diffusers/blob/v0.31.0/src/diffusers/models/transformers/transformer_flux.py
@@ -305,9 +270,15 @@ class Flux2Transformer(Module):
             for i in range(num_single_layers)
         )
 
-        # bias carries the `+1` on the scale chunk; see _prepare_torch_state.
-        self.time_embed_out = ColParallelLinear(
-            inner_dim, 2 * inner_dim, bias=True, mesh_device=device, mesh_axis=tp_axis
+        # One matmul for every modulation consumer; see _TIME_MOD_SOURCES. The bias carries the
+        # consumers' `+1` on each scale chunk (see _prepare_torch_state).
+        self.time_mod = ColParallelLinear(
+            inner_dim,
+            _TIME_MOD_CHUNKS * inner_dim,
+            bias=True,
+            mesh_device=device,
+            mesh_axis=tp_axis,
+            chunks=_TIME_MOD_CHUNKS,
         )
 
         self.norm_out = DistributedLayerNorm(
@@ -328,15 +299,6 @@ class Flux2Transformer(Module):
             ccl_manager=ccl_manager,
         )
 
-        # The double-stream shift/scale feed the double blocks' norms as fp32 dynamic weight/bias,
-        # so those layers keep the default output dtype and only their gates are cast. Every
-        # single-stream output is consumed in bf16, so that one packs bf16 directly.
-        self.double_stream_modulation_img = Flux2Modulation(inner_dim, mod_param_sets=2, tp_axis=tp_axis, device=device)
-        self.double_stream_modulation_txt = Flux2Modulation(inner_dim, mod_param_sets=2, tp_axis=tp_axis, device=device)
-        self.single_stream_modulation = Flux2Modulation(
-            inner_dim, mod_param_sets=1, tp_axis=tp_axis, device=device, out_dtype=ttnn.bfloat16
-        )
-
         self.device = device
         self._ccl_manager = ccl_manager
         self._tp_axis = tp_axis
@@ -345,15 +307,26 @@ class Flux2Transformer(Module):
         self.pc = parallel_config
 
     def _prepare_torch_state(self, state: dict[str, torch.Tensor]) -> None:
-        rename_substate(state, "norm_out.linear", "time_embed_out")
+        # Merge the four time-embedding projections into `time_mod` by stacking their rows in
+        # _TIME_MOD_SOURCES order. Leave the weight absent (reported as a missing key) rather than
+        # build a partial one if any source is missing.
+        weights = [state.pop(f"{prefix}.weight", None) for prefix, _, _ in _TIME_MOD_SOURCES]
+        assert not any(
+            [state.pop(f"{prefix}.bias", None) is not None for prefix, _, _ in _TIME_MOD_SOURCES]
+        ), "merged time-embedding projection assumes bias-free sources"
+        if all(w is not None for w in weights):
+            state["time_mod.weight"] = torch.cat(weights, dim=0)
+            # Synthesise the bias that carries the consumers' `+1` on each scale chunk.
+            state["time_mod.bias"] = torch.cat(
+                [
+                    torch.full([self._inner_dim], 1.0 if i in scale_indices else 0.0)
+                    for _, count, scale_indices in _TIME_MOD_SOURCES
+                    for i in range(count)
+                ]
+            )
+        prepare_chunked_linear_output(state, prefix="time_mod", device_count=self._tp_factor, chunks=_TIME_MOD_CHUNKS)
+
         rename_substate(state, "norm_out.norm", "norm_out")
-        # Chunk 0 is scale and chunk 1 is shift (see forward), so the bias carries the `+1` on the
-        # first half and leaves shift alone. FLUX.2 ships this layer bias-free, hence the default.
-        ones_on_scale = torch.cat([torch.ones(self._inner_dim), torch.zeros(self._inner_dim)])
-        state["time_embed_out.bias"] = (
-            state.get("time_embed_out.bias", torch.zeros(2 * self._inner_dim)) + ones_on_scale
-        )
-        prepare_chunked_linear_output(state, prefix="time_embed_out", device_count=self._tp_factor, chunks=2)
 
         for i in range(len(self.transformer_blocks)):
             prefix = f"transformer_blocks.{i}."
@@ -404,36 +377,15 @@ class Flux2Transformer(Module):
         ttnn.silu(time_embed, output_tensor=time_embed)
         time_embed = time_embed.reshape([time_embed.shape[-2], 1, time_embed.shape[-1]])
 
-        # The `+1` on every scale is folded into each modulation linear's bias, so these tuples are
-        # already in the (shift, 1 + scale, gate) form the blocks expect. The double-stream layers
-        # emit fp32 because their shift/scale drive the norms' dynamic weight/bias; only the gates
-        # are cast, since addcmul is less accurate with an fp32 gate.
-        shift_attn_i, scale_attn_i, gate_attn_i, shift_ff_i, scale_ff_i, gate_ff_i = self.double_stream_modulation_img(
-            time_embed, skip_act_fn=True
-        )
-        double_stream_mod_img = (
-            shift_attn_i,
-            scale_attn_i,
-            ttnn.typecast(gate_attn_i, ttnn.bfloat16),
-            shift_ff_i,
-            scale_ff_i,
-            ttnn.typecast(gate_ff_i, ttnn.bfloat16),
-        )
-
-        shift_attn_t, scale_attn_t, gate_attn_t, shift_ff_t, scale_ff_t, gate_ff_t = self.double_stream_modulation_txt(
-            time_embed, skip_act_fn=True
-        )
-        double_stream_mod_txt = (
-            shift_attn_t,
-            scale_attn_t,
-            ttnn.typecast(gate_attn_t, ttnn.bfloat16),
-            shift_ff_t,
-            scale_ff_t,
-            ttnn.typecast(gate_ff_t, ttnn.bfloat16),
-        )
-
-        # Already bf16 out of the linear.
-        single_stream_mod = self.single_stream_modulation(time_embed, skip_act_fn=True)
+        # One matmul for every modulation consumer, emitting bf16 with the `+1` already folded into
+        # each scale chunk, so the tuples below are directly in the (shift, 1 + scale, gate) form
+        # the blocks expect — no per-chunk add or typecast. Slices follow _TIME_MOD_SOURCES:
+        # img(6), txt(6), single(3), norm_out(2).
+        time_mod = self.time_mod(time_embed, dtype=ttnn.bfloat16)
+        double_stream_mod_img = tuple(time_mod[0:6])
+        double_stream_mod_txt = tuple(time_mod[6:12])
+        single_stream_mod = tuple(time_mod[12:15])
+        norm_out_scale, norm_out_shift = time_mod[15], time_mod[16]
 
         spatial = self.x_embedder(spatial)
         prompt = embedded_prompt
@@ -479,10 +431,8 @@ class Flux2Transformer(Module):
 
         spatial = spatial_prompt_concat if compute_prompt_output else spatial_prompt_concat  # [:, :spatial_size, :]
 
-        # bf16 out of the linear, with the `+1` already in scale via the bias.
-        time_embed_proj = self.time_embed_out(time_embed, dtype=ttnn.bfloat16)
-        [scale, shift] = ttnn.chunk(time_embed_proj, 2, dim=-1)
-
-        spatial = ttnn.squeeze(self.norm_out(ttnn.unsqueeze(spatial, 0), dynamic_weight=scale, dynamic_bias=shift), 0)
+        spatial = ttnn.squeeze(
+            self.norm_out(ttnn.unsqueeze(spatial, 0), dynamic_weight=norm_out_scale, dynamic_bias=norm_out_shift), 0
+        )
 
         return self.proj_out(spatial, gather_output=True)

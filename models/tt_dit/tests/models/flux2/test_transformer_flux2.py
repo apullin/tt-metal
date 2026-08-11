@@ -14,7 +14,7 @@ from tracy import signpost
 
 import ttnn
 
-from ....models.transformers.transformer_flux2 import Flux2Modulation, Flux2Transformer
+from ....models.transformers.transformer_flux2 import Flux2Transformer
 from ....parallel.config import DiTGParallelConfigNoCFG, ParallelFactor
 from ....parallel.manager import CCLManager
 from ....utils import cache, tensor
@@ -41,50 +41,6 @@ class ModelLocationGenerator(Protocol):
         download_dir_suffix: str = "",
     ) -> str:
         ...
-
-
-# TODO: Fix shape compatibility
-@pytest.mark.parametrize(
-    "mesh_device",
-    [
-        pytest.param((1, 8), id="1x8"),
-        pytest.param((4, 8), id="4x8"),
-    ],
-    indirect=True,
-)
-@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
-def test_modulation(mesh_device: ttnn.MeshDevice) -> None:
-    tp_axis = 1
-
-    batch_size = 2
-    sequence_length = 4096
-    size = 6144
-    mod_param_sets = 2
-
-    torch_model = diffusers.models.transformers.transformer_flux2.Flux2Modulation(size, mod_param_sets)
-    torch_model.eval()
-
-    tt_model = Flux2Modulation(size, mod_param_sets=mod_param_sets, device=mesh_device, tp_axis=tp_axis)
-    tt_model.load_torch_state_dict(torch_model.state_dict())
-
-    torch.manual_seed(0)
-    inp = torch.randn([batch_size, sequence_length, size])
-    tt_inp = tensor.from_torch(inp, device=mesh_device)
-
-    logger.info("running Torch model...")
-    with torch.no_grad():
-        out = torch_model.forward(inp)
-    out = [o2 for o1 in out for o2 in o1]  # flatten
-    # Flux2Modulation folds the consumers' `1 + scale` into its bias, so its scale outputs (index 1
-    # of each (shift, scale, gate) triple) are one greater than the reference's.
-    out = [o + 1 if i % 3 == 1 else o for i, o in enumerate(out)]
-
-    logger.info("running TT model...")
-    tt_out = tt_model.forward(tt_inp)
-
-    for out1, tt_out1 in zip(out, tt_out, strict=True):
-        tt_out_torch1 = tensor.to_torch(tt_out1, mesh_axes=[..., tp_axis])
-        assert_quality(out1, tt_out_torch1, pcc=0.99998, relative_rmse=0.009)
 
 
 @pytest.mark.parametrize(
