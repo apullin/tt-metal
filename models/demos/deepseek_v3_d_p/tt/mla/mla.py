@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -292,6 +293,7 @@ class ttMLA:
         has_indexer: bool | None = None,
         sparse_kv_cache_format: MlaKvCacheFormat = MlaKvCacheFormat.BF16_RM,
         active_seq_len: Optional[int] = None,
+        sparse_mla_overlap_profile: Optional[str] = None,
     ):
         # DSA indexer weights (v3.2 / GLM): extract NON-mutating, so the caller's state_dict survives
         # repeated construction / cache build+load (the old pop() emptied it on the first pass). Dense
@@ -546,6 +548,24 @@ class ttMLA:
         # ReuseIndexer (never computes). Absent indexer_types (v3.1 / v3.2 / GLM-5.1) every layer is
         # "full" -> current behavior, unchanged.
         self._indexer_reuse = indexer_layer_is_reused(config, layer_idx)
+        requested_overlap_profile = sparse_mla_overlap_profile
+        if requested_overlap_profile is None:
+            requested_overlap_profile = getattr(config, "sparse_mla_overlap_profile", None)
+        if requested_overlap_profile is None:
+            requested_overlap_profile = os.getenv("TT_SPARSE_MLA_OVERLAP_PROFILE")
+        if requested_overlap_profile is not None and requested_overlap_profile.lower() in ("", "0", "off", "none"):
+            requested_overlap_profile = None
+
+        self._sparse_mla_overlap = None
+        if requested_overlap_profile is not None:
+            if not self._has_indexer or self.kv_only or self._indexer_reuse:
+                # Only a non-kv-only full indexer layer can launch the two independent branches. Shared
+                # layers receive already-finalized indices; dense and kv-only layers never select locally.
+                pass
+            else:
+                if self.sp_factor == 1:
+                    raise ValueError("sparse MLA overlap requires SP > 1; SP=1 uses an unconstrained slice path")
+                self._sparse_mla_overlap = self.tt_ccl.get_sparse_mla_overlap_resources(requested_overlap_profile)
         if self._has_indexer:
             # The indexer assumes natural-order SP sharding (contiguous per-chip query blocks: its
             # device RoPE and the indexer_score per-device causal offset both index positions as
@@ -604,6 +624,10 @@ class ttMLA:
             self._attention = self._sparse_chunked_attn
         else:
             self._attention = self._dense_chunked_attn if self.is_chunked else self._dense_single_attn
+
+    def release_sparse_mla_overlap_manager(self) -> None:
+        """Forward shared sparse-MLA overlap teardown to the model-wide TT_CCL owner."""
+        self.tt_ccl.release_sparse_mla_overlap_manager()
 
     @staticmethod
     def kv_cache_to_host(kvpe_cache: MlaKvCache, mesh_device: ttnn.MeshDevice, sp_axis: int = 0):

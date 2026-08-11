@@ -35,6 +35,7 @@ from models.demos.deepseek_v3_d_p.tt.mla.indexer import (
     resolve_has_indexer,
 )
 from models.demos.deepseek_v3_d_p.tt.mla.rope import RotarySetup
+from models.demos.deepseek_v3_d_p.tt.tt_ccl import TT_CCL
 from models.demos.deepseek_v3_d_p.utils.fast_cache_checker import init_checker, report_and_clear
 from models.demos.deepseek_v3_d_p.utils.kv_cache_utils import MlaKvCacheFormat, init_kvpe_cache, init_mla_kv_cache
 from models.demos.deepseek_v3_d_p.utils.test_utils import WH_WORKER_L1_SIZE
@@ -184,6 +185,92 @@ def test_indexer_forward_is_sequential_stage_wrapper(monkeypatch):
 
     assert indexer.forward(object(), object(), 32) is final_indices
     assert calls == ["score", ("select_local", state), ("finalize", local_indices, state)]
+
+
+class _FakeOverlapMesh:
+    def __init__(self, x, y):
+        self.grid = ttnn.CoreCoord(x, y)
+        self.calls = []
+
+    def compute_with_storage_grid_size(self):
+        return self.grid
+
+    def create_sub_device_manager(self, subdevices, local_l1_size):
+        self.calls.append(("create", subdevices, local_l1_size))
+        return "manager"
+
+    def clear_loaded_sub_device_manager(self):
+        self.calls.append("clear")
+
+    def remove_sub_device_manager(self, manager):
+        self.calls.append(("remove", manager))
+
+
+def _bare_tt_ccl(mesh):
+    ccl = object.__new__(TT_CCL)
+    ccl.mesh_device = mesh
+    ccl.sparse_mla_overlap_resources = None
+    return ccl
+
+
+def test_sparse_mla_overlap_qb2_profile_resources_and_teardown(monkeypatch):
+    """The local proxy owns exactly 80/30 cores, a mesh-initialized pair, and idempotent teardown."""
+    mesh = _FakeOverlapMesh(11, 10)
+    ccl = _bare_tt_ccl(mesh)
+    events = []
+    semaphores = iter(("ready", "valid"))
+    monkeypatch.setattr(
+        ttnn,
+        "get_memory_view",
+        lambda *_: SimpleNamespace(total_bytes_per_bank=2048),
+    )
+    monkeypatch.setattr(
+        ttnn,
+        "create_global_semaphore",
+        lambda _mesh, cores, initial, buffer_type: events.append(
+            ("create_sem", cores.num_cores(), initial, buffer_type)
+        )
+        or next(semaphores),
+    )
+    monkeypatch.setattr(ttnn, "synchronize_device", lambda actual_mesh: events.append(("sync", actual_mesh)))
+    monkeypatch.setattr(
+        ttnn,
+        "reset_global_semaphore_value",
+        lambda semaphore, value: events.append(("reset", semaphore, value)),
+    )
+
+    resources = ccl.get_sparse_mla_overlap_resources("qb2_80_30")
+    assert resources.topk_core_grid.num_cores() == 80
+    assert resources.gather_core_grid.num_cores() == 30
+    assert resources.ready_semaphore == "ready"
+    assert resources.data_valid_semaphore == "valid"
+    assert ccl.get_sparse_mla_overlap_resources("qb2_80_30") is resources
+    assert mesh.calls[0][0] == "create" and mesh.calls[0][2] == 0
+    assert events[:3] == [
+        ("create_sem", 30, 0, ttnn.BufferType.L1_SMALL),
+        ("create_sem", 30, 0, ttnn.BufferType.L1_SMALL),
+        ("sync", mesh),
+    ]
+
+    ccl.release_sparse_mla_overlap_manager()
+    ccl.release_sparse_mla_overlap_manager()
+    assert mesh.calls[-2:] == ["clear", ("remove", "manager")]
+    assert events[-4:] == [
+        ("sync", mesh),
+        ("reset", "ready", 0),
+        ("reset", "valid", 0),
+        ("sync", mesh),
+    ]
+
+
+@pytest.mark.parametrize(
+    "profile,grid",
+    [("galaxy_80_40", (11, 10)), ("loudbox_80_40", (12, 9)), ("qb2_80_30", (12, 10))],
+)
+def test_sparse_mla_overlap_profiles_fail_closed(profile, grid, expect_error):
+    ccl = _bare_tt_ccl(_FakeOverlapMesh(*grid))
+    with expect_error(ValueError, "requires a"):
+        ccl.get_sparse_mla_overlap_resources(profile)
 
 
 def test_matches_config_rejects_dense():
