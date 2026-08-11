@@ -320,7 +320,7 @@
     wh_n150:
       timeout: 9
       tier: 3
-  owner_id: U087S3K319A # Austin Ho
+  owner_id: U024A4EFV6U # Brian Liu
   team: models
 
 - name: ResNet-50 unit tests
