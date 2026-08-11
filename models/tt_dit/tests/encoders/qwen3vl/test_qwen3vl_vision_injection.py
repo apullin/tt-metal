@@ -289,7 +289,7 @@ HIDDEN_REAL = 5120
 # fused-conditioner test is a single block at seq_len 19, so the whole prior green record for
 # `_scatter_rows` was collected without the hazard ever being exercised.
 #
-# STATE.md amendment 75 is why this is worth its own gate rather than an assumption: TILE row
+# Why this is worth its own gate rather than an assumption: TILE row
 # granularity is 32, an unaligned cut there *asserted* in the DiT's packed-sequence path, and the fix
 # was to assemble in ROW_MAJOR and convert once. `_scatter_rows` slices a TILE_LAYOUT tensor at
 # arbitrary row offsets, so it is the same hazard in a different module.
@@ -363,8 +363,7 @@ def test_scatter_rows_add_is_exact_across_tile_boundaries(mesh_device, submesh_s
     `ttnn.add` and torch do not round a bf16 sum identically. Two earlier bars were both wrong for the
     same reason and are recorded so nobody re-derives them: a 2**-8 relative tolerance (that is *half* a
     bf16 ulp -- 7 stored mantissa bits put the spacing at 2**-7 relative), and bit-exactness against a
-    bf16-rounded golden (which assumes both sides round the same way). The trap STATE.md amendment 76
-    names, twice. What established it as a rounding-mode difference rather than a tile-boundary effect
+    bf16-rounded golden (which assumes both sides round the same way). What established it as a rounding-mode difference rather than a tile-boundary effect
     was a single-tile `seq=19` control failing exactly as hard as the 2067-row case -- a tile-boundary
     defect cannot do that. That control was a bringup diagnostic at an invented shape and is not kept.
 
