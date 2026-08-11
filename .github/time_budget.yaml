@@ -118,7 +118,7 @@ ttnn:
   # test-framework assignment is being settled. Tracked in
   # https://github.com/tenstorrent/tt-metal/issues/44285
   profiler:
-    wh_llmbox: 150
+    wh_llmbox: 90
     wh_galaxy: 50
     wh_n150_civ2: 60
     wh_n300_civ2: 60
