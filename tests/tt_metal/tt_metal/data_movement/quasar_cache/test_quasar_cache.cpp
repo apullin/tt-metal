@@ -37,8 +37,7 @@ struct L2FlushTestConfig {
     bool expect_new_values = true;  // true for flush tests, false for invalidate tests
 };
 
-bool run_l2_flush_test(
-    distributed::MeshDevice& mesh_device, const unit_tests::dm::quasar_cache::L2FlushTestConfig& config) {
+bool run_l2_flush_test(distributed::MeshDevice& mesh_device, const L2FlushTestConfig& config) {
     constexpr CoreCoord core = {0, 0};
     const experimental::NodeCoord node{0, 0};
 
@@ -120,8 +119,7 @@ struct L1DCacheTestConfig {
     bool expect_new_values;  // true for flush tests, false for invalidate tests
 };
 
-bool run_l1_dcache_test(
-    distributed::MeshDevice& mesh_device, const unit_tests::dm::quasar_cache::L1DCacheTestConfig& config) {
+bool run_l1_dcache_test(distributed::MeshDevice& mesh_device, const L1DCacheTestConfig& config) {
     constexpr CoreCoord core = {0, 0};
     const experimental::NodeCoord node{0, 0};
 

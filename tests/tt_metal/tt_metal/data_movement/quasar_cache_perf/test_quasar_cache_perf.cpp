@@ -30,8 +30,6 @@ bool should_skip_test() { return std::getenv("TT_METAL_SIMULATOR") == nullptr; }
 // Runs one write pass of `size_bytes` via `write_path` (0=uncached,1=cached+flush)
 // on a single DM core, then reads back and verifies the byte pattern landed.
 bool run_cache_write(distributed::MeshDevice& mesh_device, std::uint32_t size_bytes, std::uint32_t write_path) {
-    using namespace unit_tests::dm::quasar_cache_perf;
-
     constexpr CoreCoord core = {0, 0};
     const experimental::NodeCoord node{0, 0};
 
