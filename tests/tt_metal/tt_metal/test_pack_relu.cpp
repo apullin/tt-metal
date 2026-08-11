@@ -172,7 +172,7 @@ void run_pack_relu_test(
     };
     experimental::SetProgramRunArgs(program, params);
 
-    tt_metal::RunProgram(mesh_device, std::move(program));
+    LaunchProgram(mesh_device, std::move(program));
 
     std::vector<uint32_t> result_vec;
     slow_dispatch::ReadFromBuffer(*dst_dram_buffer, result_vec);

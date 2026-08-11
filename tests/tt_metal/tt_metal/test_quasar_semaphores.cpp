@@ -146,7 +146,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarMultiSemaphorePipeline) {
     };
     experimental::SetProgramRunArgs(program, params);
 
-    tt_metal::RunProgram(this->device(), std::move(program));
+    LaunchProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> actual_data(num_elements, 0);
     slow_dispatch::ReadFromDRAMChannel(this->device(), 0, dram_dst_addr, num_elements * sizeof(uint32_t), actual_data);
@@ -357,7 +357,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarMultipleClustersMultiSemaphorePipeline) {
     };
     experimental::SetProgramRunArgs(program, params);
 
-    tt_metal::RunProgram(this->device(), std::move(program));
+    LaunchProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> actual_data(num_elements, 0);
     slow_dispatch::ReadFromDRAMChannel(this->device(), 0, dram_dst_addr, num_elements * sizeof(uint32_t), actual_data);

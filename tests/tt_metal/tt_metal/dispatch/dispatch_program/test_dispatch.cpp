@@ -576,8 +576,7 @@ TEST_F(QuasarUnitMeshFixture, QuasarDispatchSInstantiatedAndRunning) {
     std::vector<uint32_t> cleared_l1(1, 0);
     slow_dispatch::WriteToL1(this->device(), worker_node, l1_address, cleared_l1);
 
-    tt_metal::RunProgram(
-        this->device(), create_quasar_l1_write_program(this->device(), worker_node, l1_address, test_value));
+    LaunchProgram(this->device(), create_quasar_l1_write_program(this->device(), worker_node, l1_address, test_value));
 
     std::vector<uint32_t> result(1, 0);
     slow_dispatch::ReadFromL1(this->device(), worker_node, l1_address, sizeof(uint32_t), result);

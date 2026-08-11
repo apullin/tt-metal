@@ -111,7 +111,7 @@ TEST_F(QuasarUnitMeshFixture, MultiDmAddTwoInts) {
     };
     experimental::SetProgramRunArgs(program, params);
 
-    tt_metal::RunProgram(this->device(), std::move(program));
+    LaunchProgram(this->device(), std::move(program));
 
     std::vector<uint32_t> result_core_0(3, 0);
     slow_dispatch::ReadFromL1(this->device(), CoreCoord(0, 0), result_base, sizeof(uint32_t) * 3, result_core_0);

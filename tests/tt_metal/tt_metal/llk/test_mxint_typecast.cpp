@@ -167,7 +167,7 @@ static vector<uint32_t> run_mxint_typecast(
     };
     experimental::SetProgramRunArgs(program, params);
 
-    RunProgram(mesh_device, std::move(program));
+    LaunchProgram(mesh_device, std::move(program));
 
     vector<uint32_t> result_vec;
     slow_dispatch::ReadFromBuffer(*dst_buffer, result_vec);
