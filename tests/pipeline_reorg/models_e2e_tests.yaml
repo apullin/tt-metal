@@ -1023,7 +1023,7 @@
 
 - name: VGGNet e2e tests
   cmd: |
-    pytest --timeout 540 models/demos/vision/classification/vgg/demo/demo.py
+    pytest --timeout 480 models/demos/vision/classification/vgg/demo/demo.py
   model: vggnet
   model_family: VGGNet
   skus:
@@ -1037,7 +1037,7 @@
 - name: BERT-Tiny e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 480 models/demos/wormhole/bert_tiny/demo/demo.py
+    pytest --timeout 420 models/demos/wormhole/bert_tiny/demo/demo.py
   model: bert-tiny
   model_family: BERT
   skus:
@@ -1055,8 +1055,8 @@
   cmd: |
     export HF_HUB_OFFLINE=0
     exit_code=0
-    pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
-    pytest --timeout 420 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
+    pytest --timeout 360 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
+    pytest --timeout 360 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
     exit $exit_code
   model: bert-large
   model_family: BERT
@@ -1071,7 +1071,7 @@
 - name: DistilBERT e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 480 models/demos/wormhole/distilbert/demo/demo.py
+    pytest --timeout 420 models/demos/wormhole/distilbert/demo/demo.py
   model: distilbert
   model_family: DistilBERT
   skus:
@@ -1085,7 +1085,7 @@
 - name: SqueezeBERT e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 420 models/demos/squeezebert/demo/demo.py
+    pytest --timeout 360 models/demos/squeezebert/demo/demo.py
   model: squeezebert
   model_family: SqueezeBERT
   skus:
@@ -1098,7 +1098,7 @@
 
 - name: MNIST MLP e2e tests
   cmd: |
-    pytest --timeout 420 models/demos/vision/classification/mnist/demo/demo.py
+    pytest --timeout 360 models/demos/vision/classification/mnist/demo/demo.py
   model: mnist-mlp
   model_family: MNIST MLP
   skus:
@@ -1111,7 +1111,7 @@
 
 - name: ResNet-50 e2e tests
   cmd: |
-    pytest --timeout 660 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
+    pytest --timeout 600 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
   model: resnet50
   model_family: ResNet
   skus:
@@ -1128,7 +1128,7 @@
 # gated on N300), so it is a plain relocation.
 - name: ResNet-50 stability e2e tests
   cmd: |
-    pytest --timeout 480 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
+    pytest --timeout 420 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
   model: resnet50
   model_family: ResNet
   skus:
@@ -1146,7 +1146,7 @@
 # legacy entry; the shell wrapper's --timeout=720 is preserved on the pytest call.
 - name: ResNet-50 8-chip e2e tests
   cmd: |
-    pytest --timeout 720 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
+    pytest --timeout 540 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
   model: resnet50
   model_family: ResNet
   skus:
