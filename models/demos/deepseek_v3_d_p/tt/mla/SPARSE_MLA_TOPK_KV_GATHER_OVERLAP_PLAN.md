@@ -615,6 +615,70 @@ Production acceptance requires all of:
 - CI records the chosen firmware, fabric config, core split, active worker tier,
   and baseline rather than baking an unexplained duration into the test.
 
+#### LoudBox/Galaxy qualification runbook
+
+The correctness tests carry hardware-gated `qb2_80_30`, `loudbox_80_40`, and
+`galaxy_80_40` cases. On LoudBox or Galaxy, run the matching production case;
+it executes the serial/cold/warm comparison and both BF16-RM and scaled-FP8
+growing-prefix comparisons on the full physical mesh:
+
+```bash
+PROFILE=loudbox_80_40  # use galaxy_80_40 on Galaxy
+python -m pytest -q \
+  models/demos/deepseek_v3_d_p/tests/sparse_mla/test_sparse_mla_cache.py::test_glm52_sparse_mla_overlap_matches_serial \
+  models/demos/deepseek_v3_d_p/tests/sparse_mla/test_sparse_mla_cache.py::test_glm52_sparse_mla_overlap_growing_prefix_cache_and_lifetime \
+  -k "${PROFILE}" -s
+```
+
+Run the op-level concurrent progress and full validation cases with Ethernet
+Watcher enabled on a firmware/build whose instrumented router image fits:
+
+```bash
+TT_METAL_WATCHER=1 python -m pytest -q \
+  tests/ttnn/unit_tests/operations/experimental/test_high_bw_all_gather.py::test_high_bw_all_gather_external_semaphore_independent_progress_with_topk \
+  tests/ttnn/unit_tests/operations/experimental/test_high_bw_all_gather.py::test_high_bw_all_gather_external_semaphore_validation \
+  -s
+```
+
+For every `{warm,cold,long} x {kv_bf16,kv_scaled_fp8}` pair, first record the
+serial baseline and then gate the matching overlap run. `PROFILE` is
+`loudbox_80_40` or `galaxy_80_40`; `FW_VERSION` must identify the installed
+firmware bundle. The manifest path is format/profile-specific, so runs cannot
+silently consume a baseline from another case:
+
+```bash
+PROFILE=loudbox_80_40  # use galaxy_80_40 on Galaxy
+SCENARIO=warm
+FORMAT=kv_bf16
+FW_VERSION="replace-with-installed-firmware-bundle"
+
+DS_PERF_VARIANT=glm_5_2 \
+DS_PERF_OVERLAP_PROFILE="${PROFILE}" \
+DS_PERF_OVERLAP_ENABLED=0 \
+DS_PERF_FIRMWARE_VERSION="${FW_VERSION}" \
+python -m pytest -m perf \
+  models/demos/deepseek_v3_d_p/tests/sparse_mla/test_sparse_mla_perf.py::test_mla_chunked_perf \
+  -k "glm_5_2 and ${SCENARIO} and sparse and ${FORMAT}" -s
+
+BASELINE_NS="$(jq -r '.sparse_mla_overlap.measured_scenario_ns' \
+  "generated/profiler/glm_5_2_sparse_${FORMAT}_${PROFILE}_serial_mla_perf/run_manifest_${SCENARIO}.json")"
+
+DS_PERF_VARIANT=glm_5_2 \
+DS_PERF_OVERLAP_PROFILE="${PROFILE}" \
+DS_PERF_OVERLAP_ENABLED=1 \
+DS_PERF_OVERLAP_BASELINE_NS="${BASELINE_NS}" \
+DS_PERF_OVERLAP_MIN_IMPROVEMENT=0.10 \
+DS_PERF_FIRMWARE_VERSION="${FW_VERSION}" \
+python -m pytest -m perf \
+  models/demos/deepseek_v3_d_p/tests/sparse_mla/test_sparse_mla_perf.py::test_mla_chunked_perf \
+  -k "glm_5_2 and ${SCENARIO} and sparse and ${FORMAT}" -s
+```
+
+Archive the six serial/overlap manifest pairs and profiler CSVs for LoudBox,
+then repeat the same matrix with `PROFILE=galaxy_80_40`. Production signoff
+requires both machines to pass; a skipped hardware marker or QB2 result is not
+a substitute.
+
 ## Rollout sequence
 
 1. Land the operation-level APIs, core-placement tests, and overlap proof with
@@ -677,7 +741,7 @@ Production acceptance requires all of:
 ### Implemented QB2 integration evidence
 
 The focused GLM-5.2 eager test
-`test_glm52_sparse_mla_qb2_overlap_matches_serial` runs on the local four-chip
+`test_glm52_sparse_mla_overlap_matches_serial` runs on the local four-chip
 QB2 as a `2 x 2` SP x TP mesh. Every chip still uses its native `11 x 10`
 worker grid and the exact 80/30 sub-device profile. It executes one serial
 reference, one cold split-grid overlap pass, and one warm repeated overlap pass
@@ -693,8 +757,8 @@ prefixes, full-model Watcher stress, production-scale scaled-FP8 performance,
 and a passing whole-forward net-win gate remain open for LoudBox/Galaxy Phase 6
 runs.
 
-The follow-up QB2 integration test
-`test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime` runs two
+The follow-up integration test
+`test_glm52_sparse_mla_overlap_growing_prefix_cache_and_lifetime` runs two
 256-token chunks against one 512-token cache in both BF16-RM and scaled-FP8
 KVPE formats. It deliberately retains both device outputs until the second
 overlap region and its full-grid consumers complete, asserts distinct output
@@ -704,6 +768,13 @@ warm-cache-overlap outputs match at PCC 1.0 for both the 256-token and
 program-cache entries. A separate scaled-FP8 qualification-harness smoke run
 also completed the exact 80/30 route and emitted the format-specific manifest;
 it is execution evidence, not a production performance result.
+
+Those same two integration tests now collect hardware-gated FABRIC_2D cases
+for the full LoudBox `2 x 4` and Galaxy `8 x 4` meshes. Each production case
+asserts 80 top-k-owned and 40 gather-owned cores and executes the same PCC and
+cache/lifetime checks. On QB2 they are explicitly skipped because only four
+devices are available; they are the correctness entry points in the production
+runbook above, not locally claimed evidence.
 
 The standalone operation test now proves independent device progress without
 depending on profiler delivery: after enqueueing a production-proxy 80-core

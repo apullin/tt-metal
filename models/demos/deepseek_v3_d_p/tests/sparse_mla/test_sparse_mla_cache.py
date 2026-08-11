@@ -35,6 +35,7 @@ from models.demos.deepseek_v3_d_p.tt.mla.indexer import (
     resolve_has_indexer,
 )
 from models.demos.deepseek_v3_d_p.tt.mla.rope import RotarySetup
+from models.demos.deepseek_v3_d_p.tt.moe.init_helpers import create_fabric_router_config, get_max_payload_size
 from models.demos.deepseek_v3_d_p.tt.tt_ccl import TT_CCL
 from models.demos.deepseek_v3_d_p.utils.fast_cache_checker import init_checker, report_and_clear
 from models.demos.deepseek_v3_d_p.utils.kv_cache_utils import (
@@ -553,26 +554,66 @@ def _build_mla(
     )
 
 
-@pytest.mark.parametrize(
-    "mesh_device, device_params",
-    [
+def _overlap_integration_cases():
+    worker_l1_size = ttnn._ttnn.device.DEFAULT_WORKER_L1_SIZE if is_blackhole() else WH_WORKER_L1_SIZE
+
+    def fabric2d():
+        return {
+            "fabric_config": ttnn.FabricConfig.FABRIC_2D,
+            "fabric_router_config": create_fabric_router_config(max_payload_size=get_max_payload_size()),
+            "reliability_mode": ttnn.FabricReliabilityMode.RELAXED_INIT,
+            "worker_l1_size": worker_l1_size,
+        }
+
+    return [
         pytest.param(
             (2, 2),
-            {
-                "fabric_config": ttnn.FabricConfig.FABRIC_1D,
-                "worker_l1_size": ttnn._ttnn.device.DEFAULT_WORKER_L1_SIZE if is_blackhole() else WH_WORKER_L1_SIZE,
-            },
+            {"fabric_config": ttnn.FabricConfig.FABRIC_1D, "worker_l1_size": worker_l1_size},
+            "qb2_80_30",
+            30,
+            256,
             marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 2), topology="linear"),
-            id="linear-2x2",
+            id="qb2_80_30-linear-2x2",
         ),
-    ],
+        pytest.param(
+            (2, 4),
+            fabric2d(),
+            "loudbox_80_40",
+            40,
+            512,
+            marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 4), topology="mesh-2x4"),
+            id="loudbox_80_40-fabric2d-2x4",
+        ),
+        pytest.param(
+            (8, 4),
+            fabric2d(),
+            "galaxy_80_40",
+            40,
+            512,
+            marks=pytest.mark.requires_mesh_topology(mesh_shape=(8, 4), topology="mesh-8x4"),
+            id="galaxy_80_40-fabric2d-8x4",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "mesh_device,device_params,overlap_profile,expected_gather_cores,seq_len",
+    _overlap_integration_cases(),
     indirect=["mesh_device", "device_params"],
 )
 @pytest.mark.parametrize("variant", ["glm_5_2"], indirect=True, ids=["glm_5_2"])
 @pytest.mark.skipif(not is_blackhole(), reason="DSA ops (indexer / sparse SDPA) are Blackhole-only")
 @pytest.mark.timeout(0)
-def test_glm52_sparse_mla_qb2_overlap_matches_serial(mesh_device, device_params, variant, config_only):
-    """The QB2 80/30 manager runs the integrated GLM-5.2 path and preserves serial results.
+def test_glm52_sparse_mla_overlap_matches_serial(
+    mesh_device,
+    device_params,
+    overlap_profile,
+    expected_gather_cores,
+    seq_len,
+    variant,
+    config_only,
+):
+    """Each production/local manager runs the integrated GLM-5.2 path and preserves serial results.
 
     The same layer instance is used for both runs so this comparison isolates scheduling from weights.
     Fresh caller-owned KVPE/index caches keep the two forwards logically independent. The serial run
@@ -580,26 +621,27 @@ def test_glm52_sparse_mla_qb2_overlap_matches_serial(mesh_device, device_params,
     top-k and externally synchronized gather programs.
     """
     config = config_only
-    config.max_seq_len = SEQ_LEN
+    config.max_seq_len = seq_len
     mesh_shape = list(mesh_device.shape)
     weights = random_mla_weights(config)
     rope_tensors = RotarySetup(config, mesh_device, sp_axis=SP_AXIS, is_balanced=False).get_rope_tensors_indexed(
-        cache_seq_len_global=SEQ_LEN, chunk_size_global=SEQ_LEN
+        cache_seq_len_global=seq_len, chunk_size_global=seq_len
     )
     torch.manual_seed(42)
-    hidden = torch.randn(1, SEQ_LEN, config.hidden_size, dtype=torch.bfloat16)
+    hidden = torch.randn(1, seq_len, config.hidden_size, dtype=torch.bfloat16)
 
     mla = _build_mla(
         config,
         weights,
         mesh_device,
         weight_cache_path=None,
-        sparse_mla_overlap_profile="qb2_80_30",
+        seq_len=seq_len,
+        sparse_mla_overlap_profile=overlap_profile,
     )
     resources = mla._sparse_mla_overlap
     assert resources is not None
     assert resources.topk_core_grid.num_cores() == 80
-    assert resources.gather_core_grid.num_cores() == 30
+    assert resources.gather_core_grid.num_cores() == expected_gather_cores
 
     try:
         # Temporarily select the compatibility schedule for the numerical reference; restoring the
@@ -638,23 +680,13 @@ def test_glm52_sparse_mla_qb2_overlap_matches_serial(mesh_device, device_params,
 
     for run, overlapped in (("cold", overlapped_cold), ("warm", overlapped_warm)):
         passed, pcc = comp_pcc(serial, overlapped, 0.999)
-        logger.info(f"[glm_5_2] sparse MLA serial vs QB2 80/30 {run} overlap PCC: {pcc}")
+        logger.info(f"[glm_5_2/{overlap_profile}] sparse MLA serial vs {run} overlap PCC: {pcc}")
         assert passed, f"GLM-5.2 {run} overlapped sparse MLA diverged from serial scheduling: PCC={pcc}"
 
 
 @pytest.mark.parametrize(
-    "mesh_device, device_params",
-    [
-        pytest.param(
-            (2, 2),
-            {
-                "fabric_config": ttnn.FabricConfig.FABRIC_1D,
-                "worker_l1_size": ttnn._ttnn.device.DEFAULT_WORKER_L1_SIZE if is_blackhole() else WH_WORKER_L1_SIZE,
-            },
-            marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 2), topology="linear"),
-            id="linear-2x2",
-        ),
-    ],
+    "mesh_device,device_params,overlap_profile,expected_gather_cores,unused_single_seq_len",
+    _overlap_integration_cases(),
     indirect=["mesh_device", "device_params"],
 )
 @pytest.mark.parametrize("variant", ["glm_5_2"], indirect=True, ids=["glm_5_2"])
@@ -665,8 +697,15 @@ def test_glm52_sparse_mla_qb2_overlap_matches_serial(mesh_device, device_params,
 )
 @pytest.mark.skipif(not is_blackhole(), reason="DSA ops (indexer / sparse SDPA) are Blackhole-only")
 @pytest.mark.timeout(0)
-def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
-    mesh_device, device_params, variant, cache_format, config_only
+def test_glm52_sparse_mla_overlap_growing_prefix_cache_and_lifetime(
+    mesh_device,
+    device_params,
+    overlap_profile,
+    expected_gather_cores,
+    unused_single_seq_len,
+    variant,
+    cache_format,
+    config_only,
 ):
     """Two growing chunks retain both outputs and reuse every split-grid/format program hash."""
     seq_len, chunk = 512, 256
@@ -691,11 +730,13 @@ def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
         seq_len=seq_len,
         is_chunked=True,
         active_seq_len=chunk,
-        sparse_mla_overlap_profile="qb2_80_30",
+        sparse_mla_overlap_profile=overlap_profile,
         sparse_kv_cache_format=cache_format,
     )
     resources = mla._sparse_mla_overlap
     assert resources is not None
+    assert resources.topk_core_grid.num_cores() == 80
+    assert resources.gather_core_grid.num_cores() == expected_gather_cores
 
     def run_chunks(overlap):
         mla._sparse_mla_overlap = resources if overlap else None
@@ -744,7 +785,7 @@ def test_glm52_sparse_mla_qb2_overlap_growing_prefix_cache_and_lifetime(
         for chunk_idx, (expected, actual) in enumerate(zip(serial, actual_chunks)):
             passed, pcc = comp_pcc(expected, actual, 0.999)
             logger.info(
-                f"[glm_5_2/{cache_format.name}] sparse MLA growing-prefix serial vs QB2 80/30 {run_name} "
+                f"[glm_5_2/{cache_format.name}/{overlap_profile}] sparse MLA growing-prefix serial vs {run_name} "
                 f"chunk {chunk_idx} PCC: {pcc}"
             )
             assert passed, f"GLM-5.2/{cache_format.name} {run_name} overlap chunk {chunk_idx} diverged: PCC={pcc}"
