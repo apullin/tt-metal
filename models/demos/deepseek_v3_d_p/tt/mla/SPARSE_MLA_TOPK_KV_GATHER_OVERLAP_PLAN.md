@@ -735,6 +735,14 @@ factory branch, which contains neither semaphore allocation nor
 `Synchronize`, the cache-miss allocator assertion and gather-scoped event are
 the direct no-hidden-allocation/no-other-subdevice-drain evidence.
 
+The consolidated local regression on 2026-08-11 passed 12 focused
+`high_bw_all_gather` device cases, five restricted-grid `topk_large_indices`
+device cases, three shared C++ scheduler/top-k cases, 17 sparse-MLA host
+contract cases, and all three QB2 model integration cases. The model cases are
+the serial/cold/warm test plus the BF16-RM and scaled-FP8 growing-prefix tests;
+every reported comparison was PCC 1.0. This snapshot qualifies the local
+80/30 path only and does not close any 80/40 production gate.
+
 The same independent-progress test passes with Tensix Watcher enabled via
 `TT_METAL_WATCHER=1 TT_METAL_WATCHER_DISABLE_ETH=1`: the gather-scoped event
 completed in 0.595 ms while the isolated 80-core top-k lower bound was 2.445
@@ -862,3 +870,9 @@ phases, a further review was invoked with
 It likewise produced no output before the bounded 180-second timeout. No
 different Claude model was substituted, and this attempt is not represented as
 an approval.
+
+After completing the expanded Phase 2 operation matrix, the same Opus-only
+command was invoked once more against the current branch and plan. It produced
+no output during a bounded 180-second wait and was terminated, so this attempt
+also adds no verdict. The four earlier successful Claude Opus reviews and their
+incorporated dispositions remain the review basis for this plan.
