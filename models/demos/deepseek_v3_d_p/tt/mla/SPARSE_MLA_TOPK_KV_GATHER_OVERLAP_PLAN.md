@@ -656,7 +656,7 @@ Production acceptance requires all of:
 
 ## Deliverables checklist
 
-- [ ] `topk_large_indices` sub-device/core-grid API and tests
+- [x] `topk_large_indices` sub-device/core-grid API and tests
 - [x] `high_bw_all_gather` external-semaphore interface and C++ factory path
 - [ ] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
 - [ ] exact-hash warmup and cold-cache serialization coverage
@@ -721,3 +721,29 @@ the factory's stored worker grid. The remaining independent-progress,
 runtime-control recovery, confinement, and scheduler/performance cases stay
 open in the checklist because they require the top-k and sparse-MLA integration
 phases rather than only the op interface.
+
+The implemented `topk_large_indices` phase received a fourth Claude Opus
+review using `claude --dangerously-skip-permissions --model opus --print ...`.
+Its verdict was **APPROVE WITH CHANGES**. The requested changes were applied:
+
+- the 163-row discontiguous-grid device test now gives every row a distinct
+  top-k index set, so row duplication, omission, or permutation cannot pass;
+- production runtime-argument programming and a host C++ unit test share one
+  canonical `(core, start_row, num_rows)` derivation, directly pinning the
+  3/2-row split and row-wise traversal across a discontiguous 80-core set;
+- cache hits assert that the resolved grid exactly matches the compiled grid,
+  while the cache key uses that resolved grid instead of duplicating entries
+  for implicit versus explicit selection of the same subdevice;
+- tests cover explicit-grid selection without a subdevice ID, out-of-device
+  grids under the default manager, 110/80/30-core cache separation, and
+  implicit/explicit full-grid cache equivalence.
+
+Exact logical core coordinates are not exposed by the lightweight realtime
+callback (timestamps and kernel sources) or `ProgramAnalysisData` (core count
+only). Op-level confinement is therefore pinned structurally by creating all
+kernels/CBs on the resolved `CoreRangeSet`, the shared scheduling test, and
+restricted-grid device correctness. Exact-coordinate profiler/Tracy evidence
+remains an explicit gate in the combined overlap and end-to-end phases, where
+both branches and subdevice ownership can be observed together. Two narrower
+follow-up Opus invocations were attempted after incorporating the findings but
+the Claude CLI produced no output and timed out; no different model was used.
