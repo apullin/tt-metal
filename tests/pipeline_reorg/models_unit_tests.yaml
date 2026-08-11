@@ -304,41 +304,40 @@
 # port: the Llama and Mistral entries above had to unset it, and running these three
 # with it on is what proves they do not need the same exemption.
 #
-# The consequence is that the timeouts below are NOT the measured legacy wall-clock —
-# the watcher adds per-launch cost, so each is set to roughly 2x the no-watcher
-# measurement. Re-measure and tighten from the first green watcher-enabled run; the
-# provisional values are called out per entry.
+# Validated: all three passed with the watcher on in run 31511489499, and the watcher
+# cost turned out to be negligible — test-step durations were 2.6 / 13.1 / 4.7 min with
+# it against 2.5 / 12.1 / 4.5 min without (runs 31505413199 vs 31511489499). The
+# timeouts below are those measured step durations x1.5, not the earlier provisional 2x
+# guesses. As with the e2e file, the registry timeout caps the test step, not the job.
 
 - name: BERT-Large unit tests
   cmd: |
-    pytest --timeout 1020 \
+    pytest --timeout 180 \
       models/demos/metal_BERT_large_11/tests/test_bert_batch_dram.py \
       models/demos/metal_BERT_large_11/tests/test_demo.py
   model: bert-large
   model_family: BERT
   skus:
-    # No-watcher wall-clock of `common_models nightly [wh_n150]` over runs 31461711973 /
-    # 31359025244 / 31296628689: 7.3 / 6.0 / 5.5 min (worst + ~15% would be 9).
-    # Provisional 2x for the watcher; re-measure from the first green run.
+    # Test-step 2.6 min with the watcher (run 31511489499), 2.5 min without.
     wh_n150:
-      timeout: 18
+      timeout: 4
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
   team: models
 
 - name: ResNet-50 unit tests
   cmd: |
-    pytest --timeout 2340 \
+    pytest --timeout 1140 \
       models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_performant.py \
       models/demos/vision/classification/resnet50/wormhole/tests/test_ttnn_functional_resnet50_large.py
   model: resnet50
   model_family: ResNet
   skus:
-    # No-watcher wall-clock of `resnet50 nightly [wh_n150]` over runs 31461711973 /
-    # 31359025244 / 31296628689: 17.1 / 16.0 / 16.1 min (worst + ~15% would be 20).
-    # Provisional 2x for the watcher; re-measure from the first green run.
+    # Test-step 13.1 min with the watcher (run 31511489499), 12.1 min without. This is
+    # the long pole of the three; test_ttnn_functional_resnet50_large.py also carries its
+    # own @pytest.mark.timeout(600), which takes precedence over the --timeout above.
     wh_n150:
-      timeout: 40
+      timeout: 20
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
@@ -350,14 +349,13 @@
 # entry rather than another SKU on that one. Timeout carried over from the legacy entry.
 - name: ResNet-50 8-chip unit tests
   cmd: |
-    pytest --timeout 1740 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_resnet50_performant.py
+    pytest --timeout 420 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_resnet50_performant.py
   model: resnet50
   model_family: ResNet
   skus:
-    # Legacy t3k_resnet_tests carried 15 with no watcher. Provisional 2x for the
-    # watcher; re-measure from the first green run.
+    # Test-step 4.7 min with the watcher (run 31511489499), 4.5 min without.
     wh_llmbox:
-      timeout: 30
+      timeout: 8
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models

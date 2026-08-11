@@ -1009,10 +1009,13 @@
 # with `performance: true` on N150. The N300 legs are dropped — every N300 leg ran the
 # same test as its N150 twin, and these are tier 3 models kept on a single SKU.
 #
-# Timeouts are job wall-clock of the N150 legs in the last all-green legacy run
-# (31393369681) + ~15%. That pipeline mounts /mnt/MLPerf and sets HF_HUB_CACHE the
-# same way the tiered impl does, so the numbers should carry over, but none of them
-# were measured on the tiered runner pool. Re-measure after the first tiered run.
+# Timeouts are measured TEST-STEP durations from the tiered validation runs
+# (31505413199 / 31511489499), x1.5 with a 3-minute floor for runner variance. Note the
+# registry timeout caps the `- name: <entry>` step in models-e2e-tests-impl.yaml, NOT
+# the whole job, so job wall-clock (which carries 3-6 min of checkout + setup-job) is
+# the wrong thing to size against — doing so over-provisions the shared budget several
+# times over. VGGNet is the exception: both of its attempts died in `Set up runner` on
+# a host whose Weka mount was broken, so it has no measurement and keeps a placeholder.
 #
 # The four BERT-family demos AND all three ResNet-50 e2e entries set HF_HUB_OFFLINE=0.
 # The tiered impl forces offline on WH SKUs, while the legacy demo pipelines
@@ -1043,13 +1046,13 @@
 - name: BERT-Tiny e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 420 models/demos/wormhole/bert_tiny/demo/demo.py
+    pytest --timeout 120 models/demos/wormhole/bert_tiny/demo/demo.py
   model: bert-tiny
   model_family: BERT
   skus:
     # 6.6 min measured (run 31393369681) + ~15% -> 8.
     wh_n150:
-      timeout: 8
+      timeout: 3
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
   team: models
@@ -1061,15 +1064,15 @@
   cmd: |
     export HF_HUB_OFFLINE=0
     exit_code=0
-    pytest --timeout 360 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
-    pytest --timeout 360 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
+    pytest --timeout 210 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
+    pytest --timeout 210 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
     exit $exit_code
   model: bert-large
   model_family: BERT
   skus:
     # 11.6 min measured (run 31393369681) + ~15% -> 14.
     wh_n150:
-      timeout: 14
+      timeout: 8
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
   team: models
@@ -1077,13 +1080,13 @@
 - name: DistilBERT e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 420 models/demos/wormhole/distilbert/demo/demo.py
+    pytest --timeout 120 models/demos/wormhole/distilbert/demo/demo.py
   model: distilbert
   model_family: DistilBERT
   skus:
     # 6.8 min measured (run 31393369681) + ~15% -> 8.
     wh_n150:
-      timeout: 8
+      timeout: 3
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
   team: models
@@ -1091,26 +1094,26 @@
 - name: SqueezeBERT e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 360 models/demos/squeezebert/demo/demo.py
+    pytest --timeout 120 models/demos/squeezebert/demo/demo.py
   model: squeezebert
   model_family: SqueezeBERT
   skus:
     # 6.0 min measured (run 31393369681) + ~15% -> 7.
     wh_n150:
-      timeout: 7
+      timeout: 3
       tier: 3
   owner_id: U07D5N7QL4U # Joseph Chu
   team: models
 
 - name: MNIST MLP e2e tests
   cmd: |
-    pytest --timeout 360 models/demos/vision/classification/mnist/demo/demo.py
+    pytest --timeout 120 models/demos/vision/classification/mnist/demo/demo.py
   model: mnist-mlp
   model_family: MNIST MLP
   skus:
     # 6.0 min measured (run 31393369681) + ~15% -> 7.
     wh_n150:
-      timeout: 7
+      timeout: 3
       tier: 3
   owner_id: U088DBNUKGR # Evan Smal
   team: models
@@ -1118,13 +1121,13 @@
 - name: ResNet-50 e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 600 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
+    pytest --timeout 300 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
   model: resnet50
   model_family: ResNet
   skus:
     # 9.3 min measured (run 31393369681) + ~15% -> 11.
     wh_n150:
-      timeout: 11
+      timeout: 6
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
@@ -1136,13 +1139,13 @@
 - name: ResNet-50 stability e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 420 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
+    pytest --timeout 120 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
   model: resnet50
   model_family: ResNet
   skus:
     # 6.3 min measured (run 31358951778) + ~15% -> 8.
     wh_n150:
-      timeout: 8
+      timeout: 3
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
@@ -1162,12 +1165,12 @@
 - name: ResNet-50 8-chip e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    pytest --timeout 540 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
+    pytest --timeout 360 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
   model: resnet50
   model_family: ResNet
   skus:
     wh_llmbox_perf:
-      timeout: 13
+      timeout: 7
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
