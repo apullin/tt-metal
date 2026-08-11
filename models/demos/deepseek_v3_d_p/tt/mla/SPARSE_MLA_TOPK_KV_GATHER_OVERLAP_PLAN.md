@@ -668,7 +668,7 @@ Production acceptance requires all of:
 - [ ] manager-switch cost and whole-forward net-win gate
 - [ ] realtime-profiler overlap report and end-to-end GLM-5.2 LoudBox/Galaxy benchmark
 - [ ] production configuration/manifest recording the selected split and tier
-- [ ] Claude Opus review incorporated, with disposition recorded below
+- [x] Claude Opus plan reviews incorporated, with disposition recorded below
 
 ### Implemented QB2 integration evidence
 
@@ -765,3 +765,10 @@ remains an explicit gate in the combined overlap and end-to-end phases, where
 both branches and subdevice ownership can be observed together. Two narrower
 follow-up Opus invocations were attempted after incorporating the findings but
 the Claude CLI produced no output and timed out; no different model was used.
+After the sparse-MLA integration commit, one full-branch and one integration-
+only review were also invoked with
+`claude --dangerously-skip-permissions --model opus ...`. Both remained alive
+without producing output and were terminated after bounded waits, so they do
+not constitute additional verdicts. The four successful Opus reviews above
+remain the recorded plan/operation dispositions; this document does not claim
+that the post-integration retries approved the branch.

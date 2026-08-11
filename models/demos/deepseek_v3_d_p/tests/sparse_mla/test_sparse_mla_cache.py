@@ -348,7 +348,8 @@ def test_sparse_mla_overlap_region_orders_join_before_distribution(monkeypatch):
     assert events == ["load", "topk", "gather", "clear", "finalize"]
 
 
-def test_sparse_mla_overlap_region_recovers_after_exception(monkeypatch, expect_error):
+@pytest.mark.parametrize("failure_stage", ["topk", "gather"])
+def test_sparse_mla_overlap_region_recovers_after_exception(monkeypatch, expect_error, failure_stage):
     """An enqueue failure cannot leave the manager loaded or caller-owned semaphore state reusable."""
     mla = object.__new__(ttMLA)
     events = []
@@ -357,7 +358,19 @@ def test_sparse_mla_overlap_region_recovers_after_exception(monkeypatch, expect_
         load_sub_device_manager=lambda manager: events.append(("load", manager)),
         clear_loaded_sub_device_manager=lambda: events.append("clear"),
     )
-    mla._indexer = SimpleNamespace(select_local=lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("boom")))
+
+    def select_local(*args, **kwargs):
+        events.append("topk")
+        if failure_stage == "topk":
+            raise ValueError("boom")
+        return object()
+
+    def gather(*args, **kwargs):
+        events.append("gather")
+        raise ValueError("boom")
+
+    mla._indexer = SimpleNamespace(select_local=select_local)
+    mla._gather_kvpe_prefix = gather
     mla.tt_ccl = SimpleNamespace(reset_sparse_mla_overlap_semaphores=lambda: events.append("reset"))
     monkeypatch.setattr("models.demos.deepseek_v3_d_p.tt.mla.mla.signpost", lambda **_: None)
 
@@ -369,7 +382,8 @@ def test_sparse_mla_overlap_region_recovers_after_exception(monkeypatch, expect_
             populated_global=32,
             seq_len_local=32,
         )
-    assert events == [("load", "manager"), "clear", "reset"]
+    expected_branch_events = ["topk"] if failure_stage == "topk" else ["topk", "gather"]
+    assert events == [("load", "manager"), *expected_branch_events, "clear", "reset"]
 
 
 def test_sparse_mla_overlap_gather_threads_external_resources(monkeypatch):
