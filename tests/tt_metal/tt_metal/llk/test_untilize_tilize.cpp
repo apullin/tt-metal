@@ -206,26 +206,20 @@ static void validate_result(
 //   - TilizeType::UNPACK_A (compute kernel: tilize.cpp, optionally with FAST_TILIZE)
 void run_single_core_tilize_program(distributed::MeshDevice& mesh_device, const TestConfig& test_config) {
     auto& cq = mesh_device.mesh_command_queue();
-    auto* dev = mesh_device.get_devices()[0];
     const experimental::NodeCoord node{0, 0};
 
     const std::uint32_t num_tiles = test_config.num_tiles_r * test_config.num_tiles_c;
     const std::uint32_t input_dram_buffer_size = test_config.input_single_tile_size * num_tiles;
     const std::uint32_t output_dram_buffer_size = test_config.output_single_tile_size * num_tiles;
 
-    tt_metal::InterleavedBufferConfig input_dram_config{
-        .device = dev,
-        .size = input_dram_buffer_size,
-        .page_size = input_dram_buffer_size,
-        .buffer_type = tt_metal::BufferType::DRAM};
-    tt_metal::InterleavedBufferConfig output_dram_config{
-        .device = dev,
-        .size = output_dram_buffer_size,
-        .page_size = output_dram_buffer_size,
-        .buffer_type = tt_metal::BufferType::DRAM};
-
-    auto src0_dram_buffer = CreateBuffer(input_dram_config);
-    auto dst_dram_buffer = CreateBuffer(output_dram_config);
+    auto src0_dram_buffer = distributed::MeshBuffer::create(
+        distributed::ReplicatedBufferConfig{.size = input_dram_buffer_size},
+        {.page_size = input_dram_buffer_size, .buffer_type = BufferType::DRAM},
+        &mesh_device);
+    auto dst_dram_buffer = distributed::MeshBuffer::create(
+        distributed::ReplicatedBufferConfig{.size = output_dram_buffer_size},
+        {.page_size = output_dram_buffer_size, .buffer_type = BufferType::DRAM},
+        &mesh_device);
     const std::uint32_t dram_buffer_src0_addr = src0_dram_buffer->address();
     const std::uint32_t dram_buffer_dst_addr = dst_dram_buffer->address();
 
@@ -405,7 +399,7 @@ void run_single_core_tilize_program(distributed::MeshDevice& mesh_device, const 
     std::vector<std::uint32_t> src0_vec = test_config.src0_data.empty()
                                               ? create_arange_vector_of_bfloat16(input_dram_buffer_size, false)
                                               : test_config.src0_data;
-    tt_metal::detail::WriteToBuffer(src0_dram_buffer, src0_vec);
+    slow_dispatch::WriteToBuffer(*src0_dram_buffer, src0_vec);
 
     experimental::ProgramRunArgs params;
     if (is_unpack_a_tilize) {
@@ -438,7 +432,7 @@ void run_single_core_tilize_program(distributed::MeshDevice& mesh_device, const 
     distributed::Finish(cq);
 
     std::vector<std::uint32_t> result_vec;
-    tt_metal::detail::ReadFromBuffer(dst_dram_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_dram_buffer, result_vec);
 
     validate_result(test_config, src0_vec, /*src1_vec=*/{}, result_vec);
 }
@@ -454,7 +448,6 @@ void run_single_core_unpack_tilizeA_B_program(distributed::MeshDevice& mesh_devi
     Program program = tt::tt_metal::CreateProgram();
     workload.add_program(device_range, std::move(program));
     auto& program_ = workload.get_programs().at(device_range);
-    auto* device = mesh_device.get_devices()[0];
 
     CoreCoord core = {0, 0};
 
@@ -462,22 +455,17 @@ void run_single_core_unpack_tilizeA_B_program(distributed::MeshDevice& mesh_devi
     std::uint32_t input_dram_buffer_size = test_config.input_single_tile_size * num_tiles;
     std::uint32_t output_dram_buffer_size = test_config.output_single_tile_size * num_tiles;
 
-    tt_metal::InterleavedBufferConfig input_dram_config{
-        .device = device,
-        .size = input_dram_buffer_size,
-        .page_size = input_dram_buffer_size,
-        .buffer_type = tt_metal::BufferType::DRAM};
-    tt_metal::InterleavedBufferConfig output_dram_config{
-        .device = device,
-        .size = output_dram_buffer_size,
-        .page_size = output_dram_buffer_size,
-        .buffer_type = tt_metal::BufferType::DRAM};
-
-    auto src0_dram_buffer = CreateBuffer(input_dram_config);
+    distributed::ReplicatedBufferConfig input_buffer_config{.size = input_dram_buffer_size};
+    distributed::DeviceLocalBufferConfig input_dram_config{
+        .page_size = input_dram_buffer_size, .buffer_type = BufferType::DRAM};
+    auto src0_dram_buffer = distributed::MeshBuffer::create(input_buffer_config, input_dram_config, &mesh_device);
     std::uint32_t dram_buffer_src0_addr = src0_dram_buffer->address();
-    auto src1_dram_buffer = CreateBuffer(input_dram_config);
+    auto src1_dram_buffer = distributed::MeshBuffer::create(input_buffer_config, input_dram_config, &mesh_device);
     std::uint32_t dram_buffer_src1_addr = src1_dram_buffer->address();
-    auto dst_dram_buffer = CreateBuffer(output_dram_config);
+    auto dst_dram_buffer = distributed::MeshBuffer::create(
+        distributed::ReplicatedBufferConfig{.size = output_dram_buffer_size},
+        {.page_size = output_dram_buffer_size, .buffer_type = BufferType::DRAM},
+        &mesh_device);
     std::uint32_t dram_buffer_dst_addr = dst_dram_buffer->address();
 
     std::uint32_t src0_cb_index = tt::CBIndex::c_0;
@@ -533,10 +521,10 @@ void run_single_core_unpack_tilizeA_B_program(distributed::MeshDevice& mesh_devi
     std::vector<std::uint32_t> src0_vec = test_config.src0_data.empty()
                                               ? create_arange_vector_of_bfloat16(input_dram_buffer_size, false)
                                               : test_config.src0_data;
-    tt_metal::detail::WriteToBuffer(src0_dram_buffer, src0_vec);
+    slow_dispatch::WriteToBuffer(*src0_dram_buffer, src0_vec);
 
     std::vector<std::uint32_t> src1_vec = create_constant_vector_of_bfloat16(input_dram_buffer_size, 1.0f);
-    tt_metal::detail::WriteToBuffer(src1_dram_buffer, src1_vec);
+    slow_dispatch::WriteToBuffer(*src1_dram_buffer, src1_vec);
 
     tt_metal::SetRuntimeArgs(
         program_,
@@ -555,7 +543,7 @@ void run_single_core_unpack_tilizeA_B_program(distributed::MeshDevice& mesh_devi
     distributed::Finish(cq);
 
     std::vector<std::uint32_t> result_vec;
-    tt_metal::detail::ReadFromBuffer(dst_dram_buffer, result_vec);
+    slow_dispatch::ReadFromBuffer(*dst_dram_buffer, result_vec);
 
     validate_result(test_config, src0_vec, src1_vec, result_vec);
 }
