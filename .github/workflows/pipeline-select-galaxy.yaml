@@ -69,7 +69,6 @@ on:
           - disabled
           - all
           - llama3
-          - resnet50
           - unit
           - sd35
           - wan22

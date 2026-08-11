@@ -47,7 +47,6 @@ on:
           - llama3_vision
           - llama3_90b_vision
           - llama3_70b
-          - resnet50
           - sd35_large
           - motif
           - mixtral
@@ -64,7 +63,6 @@ on:
         options:
           - disabled
           - all
-          - resnet50
           - stable_diffusion_35_large
           - mochi
           - motif
@@ -78,7 +76,6 @@ on:
           - tteager
           - ethernet
           - trace stress
-          - resnet
           - sd35_large
           - motif
           - mochi

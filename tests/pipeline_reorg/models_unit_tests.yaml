@@ -340,6 +340,24 @@
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models
 
+# Ported from the `t3k_resnet_tests` entry in t3k_integration_tests.yaml (cmd
+# run_t3000_resnet_tests in run_t3000_integration_tests.sh, now deleted). Note the path:
+# this is ttnn_resnet/tests/test_resnet50_performant.py, the multi-chip shared-infra
+# test, not the wormhole/tests/ file the wh_n150 entry above runs — so it is a separate
+# entry rather than another SKU on that one. Timeout carried over from the legacy entry.
+- name: ResNet-50 8-chip unit tests
+  cmd: |
+    unset TT_METAL_WATCHER
+    pytest --timeout 900 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_resnet50_performant.py
+  model: resnet50
+  model_family: ResNet
+  skus:
+    wh_llmbox:
+      timeout: 15
+      tier: 3
+  owner_id: U085GDCAZTN # Pavle Josipovic
+  team: models
+
 - name: Gemma-3-4B unit tests
   cmd: |
     export TT_METAL_WATCHER=30

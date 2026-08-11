@@ -1139,6 +1139,23 @@
   owner_id: U0837MYG788 # Marko Radosavljevic
   team: models
 
+# Ported from the `t3k_resnet50_tests` entry in t3k_demo_tests.yaml (cmd
+# run_t3000_resnet50_tests in run_t3000_demo_tests.sh, now deleted). This is the 8-chip
+# demo, so it is the T3K counterpart of the wh_n150 e2e entry above rather than a
+# duplicate of it — different test file, different mesh. Timeout carried over from the
+# legacy entry; the shell wrapper's --timeout=720 is preserved on the pytest call.
+- name: ResNet-50 8-chip e2e tests
+  cmd: |
+    pytest --timeout 720 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
+  model: resnet50
+  model_family: ResNet
+  skus:
+    wh_llmbox_perf:
+      timeout: 10
+      tier: 3
+  owner_id: U03PUAKE719 # Miguel Tairum Cruz
+  team: models
+
 - name: TT-DiT Wan2.2-T2V-A14B e2e tests (BH QuietBox 2)
   cmd: |
     unset HF_HUB_OFFLINE
