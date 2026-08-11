@@ -186,7 +186,7 @@ protected:
     void init_max_cbs() { max_cbs_ = tt::tt_metal::MetalContext::instance().hal().get_arch_num_circular_buffers(); }
 };
 
-// Enqueue a Program on a unit mesh at mesh coord (0, 0).
+// Concise way to run a single program on a mesh device.
 inline void RunProgram(distributed::MeshDevice& mesh_device, Program program, bool skip_finish = false) {
     distributed::MeshWorkload workload;
     workload.add_program(distributed::MeshCoordinateRange{mesh_device.shape()}, std::move(program));
