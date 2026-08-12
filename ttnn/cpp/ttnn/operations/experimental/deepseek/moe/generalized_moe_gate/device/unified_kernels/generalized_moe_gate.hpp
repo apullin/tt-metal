@@ -77,7 +77,8 @@ struct GeneralizedMoeGate {
         uint32_t cb_tilize_ = 8,
         uint32_t cb_tilize_idx_ = 9,
         uint32_t topk_ = 8,
-        uint32_t output_softmax_ = 0>
+        uint32_t output_softmax_ = 0,
+        uint32_t ungrouped_top8_ = 1>
     struct ComputeCTArgs {
         static constexpr uint32_t input_cb = input_cb_;
         static constexpr uint32_t bias_cb = bias_cb_;
@@ -95,6 +96,7 @@ struct GeneralizedMoeGate {
         static constexpr uint32_t cb_tilize_idx = cb_tilize_idx_;
         static constexpr uint32_t topk = topk_;
         static constexpr bool output_softmax = output_softmax_ == 1;
+        static constexpr bool ungrouped_top8 = ungrouped_top8_ == 1;
         // topk is restricted to {4, 6, 8}: the finalize rank-mask is correct only for these (topk 1-3 leave
         // ranks 0-3 unmasked, 5/7 are untested). The device op rejects other values on the host (TT_FATAL)
         // before this kernel is ever compiled; this static_assert is the compile-time mirror, so a kernel
@@ -138,7 +140,7 @@ struct GeneralizedMoeGate {
             copy_tile(CTArgs::input_indices_cb, b, 1);
             reconfig_data_format_srca(CTArgs::input_cb);
             generalized_moe_gate_init<CTArgs::enable_sigmoid>(CTArgs::input_cb, CTArgs::bias_cb);
-            generalized_moe_gate<CTArgs::enable_sigmoid, false, /*produce_run=*/true, 0, 2, 0>(
+            generalized_moe_gate<CTArgs::ungrouped_top8, CTArgs::enable_sigmoid, false, /*produce_run=*/true, 0, 2, 0>(
                 CTArgs::input_cb, CTArgs::bias_cb, CTArgs::eps, CTArgs::scaling_factor);  // math run at {0,2}
             // Relocate {0,2}->{0,4} BEFORE step2: step2 is built for the finalize layout (store8_even_cols
             // at offsets {0,4}); applied to a {0,2} run it mis-strides and 2-period-duplicates col 2 (and
@@ -227,6 +229,7 @@ struct GeneralizedMoeGate {
                 generalized_moe_gate_init<CTArgs::enable_sigmoid>(CTArgs::input_cb, CTArgs::bias_cb);
                 input_cb.wait_front(1);
                 generalized_moe_gate<
+                    CTArgs::ungrouped_top8,
                     CTArgs::enable_sigmoid,
                     false,
                     false,
