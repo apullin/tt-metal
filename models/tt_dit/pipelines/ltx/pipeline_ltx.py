@@ -1058,12 +1058,30 @@ class LTXPipeline:
         """
         assert self.vae_encoder is not None, "VAE encoder not constructed (no encoder_blocks in checkpoint?)"
         self._prepare_vae_encoder()
+        # The encoder runs eagerly, and on a warm worker it runs *after* a traced denoise/decode has
+        # replayed, which skews the ping-pong parity its sharded convs and gathers depend on. Resync
+        # before touching it or the first halo exchange deadlocks: see reset_global_semaphores.
+        self._resync_ccl_ping_pong()
         device_latent = self.vae_encoder(image_BCFHW)
         if os.environ.get("LTX_VAE_ENCODER_HOST", "0") != "1":
             return device_latent
         host_latent = self._host_encode_image(image_BCFHW)
         self._log_encoder_parity(device_latent, host_latent)
         return host_latent
+
+    def _resync_ccl_ping_pong(self):
+        """Drain the device, then hand every CCL manager's ping-pong state back to a known parity.
+
+        Both managers need it even when only one of them was traced: they are the same object on
+        some mesh shapes and distinct on others, and a skew in either one hangs the encoder.
+        """
+        ttnn.synchronize_device(self.mesh_device)
+        seen = set()
+        for manager in (self.ccl_manager, self.vae_ccl_manager, self.audio_ccl_manager):
+            if manager is None or id(manager) in seen:
+                continue
+            seen.add(id(manager))
+            manager.reset_global_semaphores()
 
     def _build_host_vae_encoder(self):
         """Reference (CPU/torch) LTX-2 VAE encoder from ``ltx_core``, built lazily from the same

@@ -401,16 +401,41 @@ class CCLManager:
         )
 
     def reset_global_semaphores(self):
-        """Reset all global semaphores to 0"""
+        """Put host and device back in agreement about which ping-pong semaphore is current.
+
+        The getters above hand out semaphores by alternating a *host*-side parity index. A traced
+        replay re-runs the recorded collectives on device without going through those getters, so
+        after a replay the host parity no longer tracks the device's last-used semaphore. The next
+        eager collective then waits on one its neighbour has already signalled and deadlocks with
+        no error message. Zeroing the device values and the parities together is what restores the
+        invariant — either one alone still leaves the two sides disagreeing.
+
+        Every pool must be covered: a pool left out stays skewed and deadlocks the next time it is
+        the one an eager op reaches for.
+
+        Callers must drain the device first. A semaphore zeroed while its collective is still in
+        flight loses that signal, which produces the very hang this prevents.
+        """
         for axis in [0, 1]:
-            for sem in self.np_ping_pong_semaphores[axis]:
-                ttnn.reset_global_semaphore_value(sem, 0)
-            for sem in self.sr_ping_pong_semaphores[axis]:
-                ttnn.reset_global_semaphore_value(sem, 0)
-            for sem in self.rs_ping_pong_semaphores[axis]:
-                ttnn.reset_global_semaphore_value(sem, 0)
-            for sem in self.ag_ping_pong_semaphores[axis]:
-                ttnn.reset_global_semaphore_value(sem, 0)
+            for pool in (
+                self.rs_ping_pong_semaphores,
+                self.rs_ping_pong_semaphores_fused,
+                self.ag_ping_pong_semaphores,
+                self.exp_ring_ping_pong_semaphores,
+                self.np_ping_pong_semaphores,
+                self.sr_ping_pong_semaphores,
+                self.barrier_semaphores,
+            ):
+                for sem in pool[axis]:
+                    ttnn.reset_global_semaphore_value(sem, 0)
+
+        self.rs_ping_pong_idx = [0, 0]
+        self.rs_ping_pong_idx_fused = [0, 0]
+        self.ag_ping_pong_idx = [0, 0]
+        self.exp_ring_ping_pong_idx = [0, 0]
+        self.np_ping_pong_idx = [0, 0]
+        self.sr_ping_pong_idx = [0, 0]
+        self.barrier_idx = [0, 0]
 
     def all_gather_persistent_buffer(
         self, tensor: ttnn.Tensor, /, *, dim: int, mesh_axis: int | None, use_hyperparams: bool = False
