@@ -100,18 +100,14 @@
 # parent's 300 s pytest-timeout expires (seen in run 31596168974). On dedicated CIv2
 # hardware the same test has been green on main in every recent run, in ~1.5 min.
 #
-# Exact parity is not reachable for the WH leg: the old group ran on
-# `tt-ubuntu-2204-n300-stable` and no SKU in .github/sku_config.yaml maps to that label.
-# wh_n300_civ2 is the closest -- `tt-ubuntu-2204-N300-viommu-stable`, the viommu variant
-# of the same CIv2 pool. The BH leg is exact: bh_p150b_civ2 is `tt-ubuntu-2204-P150b-stable`.
+# The legacy step ran WH on N300 and BH on P150b. The N300 leg is deliberately dropped
+# here: WH device-perf runs on N150 instead, which is where the conv/pool teams develop.
+# bh_p150b_civ2 is an exact match for the old BH runner, `tt-ubuntu-2204-P150b-stable`.
 - name: ResNet-50 device perf tests
   cmd: |
     pytest models/demos/vision/classification/resnet50/{arch_dir}/tests/test_perf_device_resnet50.py -m models_device_performance_bare_metal
   model: resnet50
   skus:
-    wh_n300_civ2:
-      timeout: 10
-      arch_dir: wormhole
     bh_p150b_civ2:
       timeout: 10
       arch_dir: blackhole

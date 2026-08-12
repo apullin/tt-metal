@@ -1515,3 +1515,35 @@ targets:
             accuracy: {}
             owner_id: U088413NP0Q # Ashai Reddy Ginuga
             team: models
+
+  # ResNet-50 is tier 1 as of #52829, so unlike the other models migrated in that PR it is
+  # NOT exempt from targets -- tier 3 is exempt from perf but tier 1 is not.
+  #
+  # Only the two e2e SKUs are listed: validate_perf_targets.py's _collect_active_test_combos
+  # walks models_e2e_tests.yaml alone, so the unit (wh_llmbox) and device-perf
+  # (wh_n300_civ2, bh_p150b_civ2) combos are never gap-checked.
+  #
+  # status: TODO because the demos emit no benchmark payload today -- they assert their own
+  # thresholds inline and write nothing to generated/benchmark_data, so the verifier step is
+  # skipped entirely. Populate perf/accuracy once the tests report one.
+  resnet50:
+    aliases: ["ResNet-50", "resnet50", "ResNet50", "microsoft/resnet-50"]
+    skus:
+      wh_n150:
+        entries:
+          - batch_size: 16
+            seq_len: null
+            status: TODO
+            perf: {}
+            accuracy: {}
+            owner_id: U085GDCAZTN # Pavle Josipovic
+            team: ttnn
+      wh_llmbox_perf:
+        entries:
+          - batch_size: 16
+            seq_len: null
+            status: TODO
+            perf: {}
+            accuracy: {}
+            owner_id: U085GDCAZTN # Pavle Josipovic
+            team: ttnn
