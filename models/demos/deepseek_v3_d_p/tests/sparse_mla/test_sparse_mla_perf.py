@@ -212,6 +212,7 @@ OVERLAP_BRANCH_BASELINE_NS = float(os.environ.get("DS_PERF_OVERLAP_BRANCH_BASELI
 OVERLAP_MIN_IMPROVEMENT = float(os.environ.get("DS_PERF_OVERLAP_MIN_IMPROVEMENT", 0.10))
 OVERLAP_WHOLE_FORWARD_MIN_IMPROVEMENT = float(os.environ.get("DS_PERF_OVERLAP_WHOLE_FORWARD_MIN_IMPROVEMENT", 0.0))
 QUALIFICATION_FIRMWARE = os.environ.get("DS_PERF_FIRMWARE_VERSION")
+QUALIFICATION_RUN_ID = os.environ.get("DS_PERF_QUALIFICATION_RUN_ID")
 if OVERLAP_DEVICE_SAMPLES < 1:
     raise ValueError("DS_PERF_OVERLAP_SAMPLES must be at least 1")
 
@@ -369,6 +370,7 @@ def _write_run_manifest(
             + (f"DS_PERF_OVERLAP_PROFILE={OVERLAP_PROFILE} " if OVERLAP_PROFILE else "")
             + (f"DS_PERF_OVERLAP_ENABLED={int(OVERLAP_ENABLED)} " if OVERLAP_PROFILE else "")
             + (f"DS_PERF_FIRMWARE_VERSION={QUALIFICATION_FIRMWARE} " if QUALIFICATION_FIRMWARE else "")
+            + (f"DS_PERF_QUALIFICATION_RUN_ID={QUALIFICATION_RUN_ID} " if QUALIFICATION_RUN_ID else "")
             + (f"DS_PERF_OVERLAP_BASELINE_NS={OVERLAP_BASELINE_NS:g} " if OVERLAP_BASELINE_NS else "")
             + (
                 f"DS_PERF_OVERLAP_BRANCH_BASELINE_NS={OVERLAP_BRANCH_BASELINE_NS:g} "
@@ -398,6 +400,7 @@ def _write_run_manifest(
                 "firmware_bundle": QUALIFICATION_FIRMWARE,
             },
             "build": {"so_mtime": so_mtime},
+            "qualification_run_id": QUALIFICATION_RUN_ID,
             "sparse_mla_overlap": overlap_qualification,
             "command": reproducer,
         }

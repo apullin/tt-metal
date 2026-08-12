@@ -661,6 +661,41 @@ Production acceptance requires all of:
 
 #### LoudBox/Galaxy qualification runbook
 
+After committing the exact code under test, run the checked production driver:
+
+```bash
+models/demos/deepseek_v3_d_p/tests/sparse_mla/run_sparse_mla_overlap_qualification.sh \
+  loudbox_80_40 "<installed-firmware-bundle>"
+
+# Repeat on Galaxy with:
+#   galaxy_80_40 "<installed-firmware-bundle>"
+```
+
+The driver requires a clean tracked worktree, executes the correctness and
+Ethernet-Watcher cases, then runs all six format/scenario serial-overlap pairs.
+It rejects skips, stale manifests, wrong device counts, non-schema-v7 output,
+wrong commit/firmware provenance, incorrect observed core footprints, a branch
+win below 10%, or a non-positive whole-forward win. It archives manifests,
+per-op CSVs, JUnit files, and a six-case `summary.json` under
+`generated/profiler/qualification/`. The commands below document the expanded
+manual equivalent and remain useful for rerunning one failed case.
+
+Every silicon invocation goes through `scripts/run_safe_pytest.sh`, which
+serializes device access and applies the normal five-second dispatch-level
+hang detection/reset. Watcher coverage sets `TT_METAL_WATCHER=1` without
+disabling that dispatch timeout. The
+whole-forward threshold is intentionally strict `> 0`: any positive device
+span improvement passes, while zero or regression fails. The independently
+gated branch must still improve by at least 10%.
+
+The serial compatibility baseline intentionally retains the pre-change
+full-grid TopK and must therefore report a 120-core TopK footprint on these
+production systems. The overlap candidate must report exactly 80 TopK cores.
+This measures the total production change—core restriction plus concurrency—
+against the shipping serial path; it is not presented as a scheduler-only
+microbenchmark. The branch manifest still reports the individual device
+intervals needed to separate placement from overlap when diagnosing a result.
+
 The correctness tests carry hardware-gated `qb2_80_30`, `loudbox_80_40`, and
 `galaxy_80_40` cases. On LoudBox or Galaxy, run the matching production case;
 it executes the serial/cold/warm comparison and both BF16-RM and scaled-FP8
@@ -1105,3 +1140,17 @@ smokes passed. The second Opus review returned **APPROVE**, explicitly
 confirming the hot-path fix, lifetime/thread safety, sub-grid coverage,
 10-versus-12 reasoning, raw-device measurement, manifest fields, and plan
 arithmetic.
+
+The production qualification driver received a further Opus-only review cycle
+using `claude --dangerously-skip-permissions --model opus --effort low --print
+...`. The substantive reviews initially returned **CHANGES REQUIRED** for
+fail-open provenance and workload handling: ambient workload overrides, stale
+builds/manifests, loose skip/sample checks, unchecked baseline propagation,
+and incomplete evidence archival. The driver now pins the production workload,
+requires a clean exact commit and newer matching build, tags each manifest with
+a unique run ID, checks exact JUnit/sample counts and serial baselines, validates
+the runtime-derived gather tier and topology-dependent footprint, runs all
+silicon commands through the safe runner, and archives mandatory Watcher and
+per-call/cold evidence with explicit pass/fail status. The final review returned
+**APPROVE** after verifying the worker/mux placement formula directly against
+the gather factory and confirming the Watcher, timestamp, and gate plumbing.
