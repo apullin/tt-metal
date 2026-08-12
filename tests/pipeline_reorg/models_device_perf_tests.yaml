@@ -126,3 +126,25 @@
       arch_dir: wormhole
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: ttnn
+
+# This is an END-TO-END model-perf test, not a device-perf one: it carries
+# model_perf_t3000 / model_perf_tg rather than models_device_performance_bare_metal, and
+# it emits no device-perf CSV (the impl's report steps are guarded on that file existing,
+# so the job is unaffected). It lives here because the tiered CI has no e2e-perf pipeline
+# and this registry is the only one with a perf identity.
+#
+# It is the one ResNet-50 test the migration would otherwise drop: it ran as
+# t3k_CNN_resnet50_model_perf_tests in t3k_perf_tests.yaml (wh_llmbox_perf, 75 min), and
+# its only other reference is run_tg_model_perf_tests.sh, which no workflow invokes.
+#
+# The timeout is a placeholder sized off the legacy 75-minute budget; replace it with the
+# measured step duration plus margin after the first run.
+- name: ResNet-50 e2e model perf tests
+  cmd: |
+    pytest models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_perf_e2e_resnet50.py -m model_perf_t3000
+  model: resnet50
+  skus:
+    wh_llmbox_perf:
+      timeout: 60
+  owner_id: U085GDCAZTN # Pavle Josipovic
+  team: ttnn
