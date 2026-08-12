@@ -1026,9 +1026,6 @@
   owner_id: U024A4EFV6U # Brian Liu
   team: models
 
-# The legacy helper ran batch_7 and batch_8 with `|| fail=1` and exited non-zero at
-# the end, so both always ran. The registry cmd runs under `bash -e`, which would
-# abort at the first failure — the exit_code accumulator preserves the old behaviour.
 - name: BERT-Large e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
@@ -1089,13 +1086,11 @@
   model: resnet50
   model_family: ResNet
   skus:
-    # The ttnn_resnet 8-chip demo self-skips off T3000 via run_for_n_dev(8), so on
-    # wh_n150 the third command collects nothing and only the two single-chip tests run.
     wh_n150:
       timeout: 10
       tier: 3
     wh_llmbox_perf:
-      timeout: 14
+      timeout: 7
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models

@@ -308,13 +308,11 @@
   model: resnet50
   model_family: ResNet
   skus:
-    # The ttnn_resnet 8-chip test self-skips off T3000 via run_for_n_dev(8), so on
-    # wh_n150 the second command collects nothing.
     wh_n150:
       timeout: 20
       tier: 3
     wh_llmbox:
-      timeout: 12
+      timeout: 8
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: models

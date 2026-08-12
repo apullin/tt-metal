@@ -8,12 +8,13 @@ import pytest
 from loguru import logger
 
 import ttnn
-from models.common.utility_functions import run_for_wormhole_b0
+from models.common.utility_functions import run_for_n_dev, run_for_wormhole_b0
 from models.demos.vision.classification.resnet50.wormhole.demo.demo import test_demo_trace_with_imagenet
 
 test_demo_trace_with_imagenet.__test__ = False
 
 
+@run_for_n_dev(1, reason_str="single-chip ResNet-50 test; the 8-chip variant lives in ttnn_resnet/tests/")
 @run_for_wormhole_b0()
 @pytest.mark.parametrize(
     "device_params", [{"l1_small_size": 24576, "trace_region_size": 1605632, "num_command_queues": 2}], indirect=True

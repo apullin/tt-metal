@@ -13,7 +13,7 @@ from ttnn.model_preprocessing import (
 )
 
 import ttnn
-from models.common.utility_functions import enable_memory_reports
+from models.common.utility_functions import enable_memory_reports, run_for_n_dev
 from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.resnet50_test_infra import load_resnet50_model
 from models.demos.vision.classification.resnet50.ttnn_resnet.tt.ttnn_functional_resnet50_large import resnet50
 from tests.ttnn.utils_for_testing import assert_with_pcc
@@ -257,6 +257,7 @@ def create_test_infra(device, batch_size, act_dtype, weight_dtype, math_fidelity
     )
 
 
+@run_for_n_dev(1, reason_str="single-chip ResNet-50 test; the 8-chip variant lives in ttnn_resnet/tests/")
 @pytest.mark.timeout(600)
 @pytest.mark.parametrize("device_params", [{"l1_small_size": 24576}], indirect=True)
 @pytest.mark.parametrize(
