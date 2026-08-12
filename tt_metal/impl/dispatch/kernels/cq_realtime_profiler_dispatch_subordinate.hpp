@@ -68,14 +68,11 @@ FORCE_INLINE void dispatch_subordinate_realtime_profiler() {
             if (current_count != last_counts[i]) {
                 DeviceZoneScopedN("TRISC0-record-end-ts");
                 last_counts[i] = current_count;
-                invalidate_l1_cache();
-                if (current_count == rt_profiler_msg->stream_target_completion_count[i]) {
-                    uint32_t time_hi = 0;
-                    uint32_t time_lo = 0;
-                    read_realtime_wall_clock(&time_hi, &time_lo);
-                    rt_profiler_msg->stream_end_time_hi[i] = time_hi;
-                    rt_profiler_msg->stream_end_time_lo[i] = time_lo;
-                }
+                uint32_t time_hi = 0;
+                uint32_t time_lo = 0;
+                read_realtime_wall_clock(&time_hi, &time_lo);
+                rt_profiler_msg->stream_end_time_hi[i] = time_hi;
+                rt_profiler_msg->stream_end_time_lo[i] = time_lo;
                 rt_profiler_msg->stream_completion_count[i] = current_count;
             }
         }

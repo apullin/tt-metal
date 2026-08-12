@@ -99,13 +99,10 @@ void zero_dispatch_s_realtime_profiler_msg_fields(
         realtime_profiler_msgs::realtime_profiler_msg_t::Field::stream_end_time_lo);
     const uint32_t stream_completion_count = factory.offset_of<realtime_profiler_msgs::realtime_profiler_msg_t>(
         realtime_profiler_msgs::realtime_profiler_msg_t::Field::stream_completion_count);
-    const uint32_t stream_target_completion_count = factory.offset_of<realtime_profiler_msgs::realtime_profiler_msg_t>(
-        realtime_profiler_msgs::realtime_profiler_msg_t::Field::stream_target_completion_count);
     for (uint32_t i = 0; i < 8; ++i) {
         write_u32(base + stream_end_time_hi + i * sizeof(uint32_t));
         write_u32(base + stream_end_time_lo + i * sizeof(uint32_t));
         write_u32(base + stream_completion_count + i * sizeof(uint32_t));
-        write_u32(base + stream_target_completion_count + i * sizeof(uint32_t));
     }
 }
 

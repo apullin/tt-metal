@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import time
+import threading
 
 
 DEFAULT_RT_PROFILER_RECORD_TIMEOUT_SECONDS = 1.0
@@ -20,6 +21,7 @@ def profile_realtime_program(
     run_fn,
     *,
     collect_all=False,
+    drain_before_run=False,
     record_timeout_seconds=DEFAULT_RT_PROFILER_RECORD_TIMEOUT_SECONDS,
 ) -> tuple:
     """Run measured device work and return (result, rt_record or rt_records)."""
@@ -27,36 +29,60 @@ def profile_realtime_program(
 
     profile_records = []
     invalid_profile_records = []
+    records_lock = threading.Lock()
 
     def collect_records(batch):
-        for record in batch.records:
-            if profile_records and not collect_all:
-                return
+        with records_lock:
+            for record in batch.records:
+                if profile_records and not collect_all:
+                    return
 
-            start_timestamp = int(record.start_timestamp)
-            end_timestamp = int(record.end_timestamp)
-            frequency = float(record.frequency)
-            if frequency <= 0 or end_timestamp <= start_timestamp:
-                invalid_profile_records.append(
-                    (int(record.runtime_id), int(record.chip_id), start_timestamp, end_timestamp, frequency)
+                start_timestamp = int(record.start_timestamp)
+                end_timestamp = int(record.end_timestamp)
+                frequency = float(record.frequency)
+                if frequency <= 0 or end_timestamp <= start_timestamp:
+                    invalid_profile_records.append(
+                        (int(record.runtime_id), int(record.chip_id), start_timestamp, end_timestamp, frequency)
+                    )
+                    continue
+
+                profile_records.append(
+                    {
+                        "runtime_id": int(record.runtime_id),
+                        "chip_id": int(record.chip_id),
+                        "start_timestamp": start_timestamp,
+                        "end_timestamp": end_timestamp,
+                        "frequency": frequency,
+                        "duration_ns": (end_timestamp - start_timestamp) / frequency,
+                        "kernel_sources": tuple(str(source) for source in record.kernel_sources),
+                    }
                 )
-                continue
-
-            profile_records.append(
-                {
-                    "runtime_id": int(record.runtime_id),
-                    "chip_id": int(record.chip_id),
-                    "start_timestamp": start_timestamp,
-                    "end_timestamp": end_timestamp,
-                    "frequency": frequency,
-                    "duration_ns": (end_timestamp - start_timestamp) / frequency,
-                    "kernel_sources": tuple(str(source) for source in record.kernel_sources),
-                }
-            )
 
     handle = ttnn.device.RegisterProgramRealtimeProfilerCallback(collect_records)
 
     try:
+        if drain_before_run:
+            # A device synchronize drains dispatch-side records, but their receiver-thread callbacks
+            # can arrive after this callback is registered. Wait for a quiet window, then discard that
+            # pre-existing traffic so the measured device span starts with run_fn's first program.
+            ttnn.synchronize_device(device)
+            drain_deadline = time.monotonic() + record_timeout_seconds
+            with records_lock:
+                last_count = len(profile_records)
+            last_change = time.monotonic()
+            while time.monotonic() < drain_deadline:
+                with records_lock:
+                    count = len(profile_records)
+                if count != last_count:
+                    last_count = count
+                    last_change = time.monotonic()
+                elif (time.monotonic() - last_change) >= RT_PROFILER_RECORD_SETTLE_SECONDS:
+                    break
+                time.sleep(0.01)
+            with records_lock:
+                profile_records.clear()
+                invalid_profile_records.clear()
+
         result = run_fn()
         ttnn.synchronize_device(device)
 
@@ -64,7 +90,8 @@ def profile_realtime_program(
         last_count = 0
         last_change = time.monotonic()
         while time.monotonic() < deadline:
-            count = len(profile_records)
+            with records_lock:
+                count = len(profile_records)
             if count and not collect_all:
                 break
             if count != last_count:

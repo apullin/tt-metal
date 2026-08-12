@@ -53,5 +53,4 @@ struct realtime_profiler_msg_t {
     volatile uint32_t stream_end_time_hi[8];
     volatile uint32_t stream_end_time_lo[8];
     volatile uint32_t stream_completion_count[8];
-    volatile uint32_t stream_target_completion_count[8];
 };

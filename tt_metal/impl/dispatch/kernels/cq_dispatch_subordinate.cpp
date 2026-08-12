@@ -320,7 +320,6 @@ uint32_t stream_wrap_gt(uint32_t a, uint32_t b) {
 
 FORCE_INLINE
 void finish_realtime_profiled_program(uint32_t wait_count, uint32_t wait_stream) {
-    (void)wait_count;
     if (!rt_profiler_enabled) {
         return;
     }
@@ -333,7 +332,7 @@ void finish_realtime_profiled_program(uint32_t wait_count, uint32_t wait_stream)
 
 #ifndef ARCH_QUASAR
     invalidate_l1_cache();
-    const uint32_t target_count = rt_profiler_msg->stream_target_completion_count[stream_index];
+    const uint32_t target_count = wait_count & ((1u << MEM_WORD_ADDR_WIDTH) - 1);
     while (rt_profiler_msg->stream_completion_count[stream_index] != target_count) {
         invalidate_l1_cache();
     }
@@ -351,6 +350,11 @@ void finish_realtime_profiled_program(uint32_t wait_count, uint32_t wait_stream)
 
 FORCE_INLINE
 void start_realtime_profiled_program(uint32_t id, uint32_t wait_count, uint32_t wait_stream) {
+    (void)wait_count;
+    // The host enables profiling asynchronously after dispatch-s boots. Refresh here so the first
+    // real program is not lost merely because kernel_main sampled the enable word before its command.
+    invalidate_l1_cache();
+    rt_profiler_enabled = (rt_profiler_msg->realtime_profiler_core_noc_xy != 0);
     if (!rt_profiler_enabled || id == REALTIME_PROFILER_UNPROFILED_PROGRAM_HOST_ID) {
         return;
     }
@@ -362,8 +366,6 @@ void start_realtime_profiled_program(uint32_t id, uint32_t wait_count, uint32_t 
     rt_active_start_hi[stream_index] = start_hi;
     rt_active_start_lo[stream_index] = start_lo;
     rt_active_program_id[stream_index] = id;
-    rt_profiler_msg->stream_target_completion_count[stream_index] =
-        (wait_count + workers_per_sub_device[stream_index]) & ((1u << MEM_WORD_ADDR_WIDTH) - 1);
 }
 
 FORCE_INLINE
