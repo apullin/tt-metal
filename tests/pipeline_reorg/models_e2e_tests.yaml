@@ -1011,7 +1011,7 @@
       timeout: 4
       tier: 3
   owner_id: U06Q7ESTFEV # Borys Bradel
-  team: models
+  team: ttnn
 
 - name: BERT-Tiny e2e tests
   cmd: |
@@ -1024,7 +1024,7 @@
       timeout: 3
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
-  team: models
+  team: ttnn
 
 - name: BERT-Large e2e tests
   cmd: |
@@ -1037,7 +1037,7 @@
       timeout: 8
       tier: 3
   owner_id: U024A4EFV6U # Brian Liu
-  team: models
+  team: ttnn
 
 - name: DistilBERT e2e tests
   cmd: |
@@ -1050,7 +1050,7 @@
       timeout: 3
       tier: 3
   owner_id: U087S3K319A # Austin Ho (CODEOWNERS models/**/distilbert/ @tt-aho)
-  team: models
+  team: ttnn
 
 - name: SqueezeBERT e2e tests
   cmd: |
@@ -1063,7 +1063,7 @@
       timeout: 3
       tier: 3
   owner_id: U07D5N7QL4U # Joseph Chu
-  team: models
+  team: ttnn
 
 - name: MNIST MLP e2e tests
   cmd: |
@@ -1093,7 +1093,7 @@
       timeout: 7
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
-  team: models
+  team: ttnn
 
 - name: TT-DiT Wan2.2-T2V-A14B e2e tests (BH QuietBox 2)
   cmd: |

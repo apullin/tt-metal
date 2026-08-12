@@ -108,6 +108,22 @@ ttnn:
     bh_loudbox: 85
     bh_p300: 85
     bh_quietbox_2: 85
+  # Tier-3 budgets for the seven models migrated in this PR, whose registry entries
+  # carry team: ttnn. Same shape as the shield team's tiered sections further down.
+  e2e_tier3:
+    # VGGNet 4 + BERT-Tiny 3 + BERT-Large 8 + DistilBERT 3 + SqueezeBERT 3 + ResNet-50 10
+    wh_n150: 31
+    # ResNet-50 e2e 8-chip leg, from t3k_demo_tests
+    wh_llmbox_perf: 7
+  unit_tier3:
+    # BERT-Large unit 4 + ResNet-50 unit 20
+    wh_n150: 24
+    # ResNet-50 unit 8-chip leg, from t3k_integration_tests
+    wh_llmbox: 8
+  device_perf:
+    # ResNet-50 device perf, moved from the resnet50 step in perf-device-models-impl.yaml
+    wh_n150: 15
+    bh_p150: 15
   integration:
     wh_llmbox: 30
     # -50: Galaxy resnet50 integration tests removed
@@ -350,10 +366,9 @@ models:
     bh_p300: 42
     bh_quietbox_2: 186
   e2e_tier3:
-    # +7: ResNet-50 e2e 8-chip leg, from t3k_demo_tests
-    wh_llmbox_perf: 71
-    # +34: 7 migrated e2e entries (VGGNet 4, BERT-Tiny 3, BERT-Large 8, DistilBERT 3, SqueezeBERT 3, MNIST MLP 3, ResNet-50 10)
-    wh_n150: 96
+    wh_llmbox_perf: 64
+    # +3: MNIST MLP e2e, the only migrated tier-3 e2e entry still owned by team models
+    wh_n150: 65
     wh_n300: 60
     bh_p150: 7
     bh_p300: 8
@@ -384,11 +399,9 @@ models:
     bh_p150: 20
     bh_quietbox_2: 50
   unit_tier3:
-    # +8: ResNet-50 unit 8-chip leg, from t3k_integration_tests
-    wh_llmbox: 28
+    wh_llmbox: 20
     wh_llmbox_perf: 58
-    # +24: BERT-Large unit 4 + ResNet-50 unit 20, from single_card_ttnn_models_frequent_tests
-    wh_n150: 65
+    wh_n150: 41
     wh_n300: 33
     bh_p150: 20
     bh_p300: 30

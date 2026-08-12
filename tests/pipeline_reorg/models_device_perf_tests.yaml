@@ -88,3 +88,25 @@
       timeout: 60
   owner_id: U08SXRPCTJ5 # Janko Mitrovic
   team: shield
+
+# ResNet-50 is a tier 3 model, so it would normally get no device-perf coverage at all --
+# tier 3 is "an end-to-end accuracy check and a unit test for the most critical module",
+# and this registry has no `tier:` field because it only feeds the Tier 1 pipeline.
+# It is here by explicit request (#52829 review): the run is short and the convolution /
+# pooling teams use it day to day while developing those ops, so the signal is worth more
+# than the tier label implies. It replaces the resnet50 step removed from
+# perf-device-models-impl.yaml by that PR, keeping both the WH and BH legs the old step
+# had (N300 CIv2 -> wh_n150, P150 BH -> bh_p150).
+- name: ResNet-50 device perf tests
+  cmd: |
+    pytest models/demos/vision/classification/resnet50/{arch_dir}/tests -m models_device_performance_bare_metal
+  model: resnet50
+  skus:
+    wh_n150:
+      timeout: 15
+      arch_dir: wormhole
+    bh_p150:
+      timeout: 15
+      arch_dir: blackhole
+  owner_id: U085GDCAZTN # Pavle Josipovic
+  team: ttnn

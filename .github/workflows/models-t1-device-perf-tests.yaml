@@ -15,6 +15,7 @@ on:
           - all
           - llama3.1-8b
           - sdxl
+          - resnet50
       sku:
         description: "Select SKU to test"
         required: false
