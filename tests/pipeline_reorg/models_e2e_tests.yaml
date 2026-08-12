@@ -1014,8 +1014,8 @@
 # registry timeout caps the `- name: <entry>` step in models-e2e-tests-impl.yaml, NOT
 # the whole job, so job wall-clock (which carries 3-6 min of checkout + setup-job) is
 # the wrong thing to size against — doing so over-provisions the shared budget several
-# times over. VGGNet is the exception: both of its attempts died in `Set up runner` on
-# a host whose Weka mount was broken, so it has no measurement and keeps a placeholder.
+# times over. Every entry here is now measured; VGGNet took three extra attempts because
+# its first three all died in `Set up runner` on hosts with a broken Weka mount.
 #
 # The four BERT-family demos AND all three ResNet-50 e2e entries set HF_HUB_OFFLINE=0.
 # The tiered impl forces offline on WH SKUs, while the legacy demo pipelines
@@ -1032,13 +1032,13 @@
 
 - name: VGGNet e2e tests
   cmd: |
-    pytest --timeout 480 models/demos/vision/classification/vgg/demo/demo.py
+    pytest --timeout 180 models/demos/vision/classification/vgg/demo/demo.py
   model: vggnet
   model_family: VGGNet
   skus:
-    # 7.7 min measured (run 31393369681) + ~15% -> 9.
+    # Test-step 2.2 min, identical across runs 31525883863 / 31525897197 / 31525909760.
     wh_n150:
-      timeout: 9
+      timeout: 4
       tier: 3
   owner_id: U06Q7ESTFEV # Borys Bradel
   team: models
