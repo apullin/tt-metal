@@ -274,6 +274,7 @@
   model: vit
   model_family: ViT
   skus:
+    # wh_n150: 9.8 min measured (run 31107849852) + ~15% -> 12.
     # wh_n300 stays at the carried-over 30: that leg never got a runner in
     # run 31107849852 (waited ~6 h, then cancelled), so there is no measurement for it.
     wh_n150:
