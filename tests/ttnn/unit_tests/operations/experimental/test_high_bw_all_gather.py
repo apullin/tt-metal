@@ -1163,6 +1163,61 @@ def test_high_bw_all_gather_external_semaphore_independent_progress_with_topk(me
         # independent-progress measurement exercises cache hits with persistent semaphores.
         warm_topk, warm_gather = under_overlap_manager(True, True)
 
+        profiled_outputs, overlap_records = profile_realtime_program(
+            rank_line,
+            lambda: under_manager(enqueue_topk, enqueue_gather),
+            collect_all=True,
+            record_timeout_seconds=5.0,
+        )
+        profiled_topk, profiled_gather = profiled_outputs
+        profiled_ops = []
+        for record in overlap_records:
+            sources = tuple(source.replace("\\", "/") for source in record["kernel_sources"])
+            if any("/experimental/topk_large_indices/" in source for source in sources):
+                op_name = "topk_large_indices"
+            elif any("/experimental/high_bw_all_gather/" in source for source in sources):
+                op_name = "high_bw_all_gather"
+            else:
+                continue
+            profiled_ops.append(
+                (
+                    op_name,
+                    record["runtime_id"],
+                    record["chip_id"],
+                    record["start_timestamp"],
+                    record["end_timestamp"],
+                    record["duration_ns"],
+                )
+            )
+        print(f"concurrent realtime-profiler records: {profiled_ops}")
+        records_by_chip = {}
+        for op_name, runtime_id, chip_id, start_tick, end_tick, duration_ns in profiled_ops:
+            chip_records = records_by_chip.setdefault(chip_id, {})
+            assert op_name not in chip_records, f"duplicate {op_name} realtime record on chip {chip_id}"
+            chip_records[op_name] = {
+                "runtime_id": runtime_id,
+                "start_tick": start_tick,
+                "end_tick": end_tick,
+                "duration_ns": duration_ns,
+            }
+        assert len(records_by_chip) == len(ttnn.get_device_tensors(logits))
+        overlap_ns_by_chip = {}
+        for chip_id, chip_records in records_by_chip.items():
+            assert set(chip_records) == {"topk_large_indices", "high_bw_all_gather"}
+            topk_record = chip_records["topk_large_indices"]
+            gather_record = chip_records["high_bw_all_gather"]
+            assert topk_record["runtime_id"] != gather_record["runtime_id"]
+            overlap_ticks = min(topk_record["end_tick"], gather_record["end_tick"]) - max(
+                topk_record["start_tick"], gather_record["start_tick"]
+            )
+            assert overlap_ticks > 0, f"device intervals did not overlap on chip {chip_id}: {chip_records}"
+            # Both records on a chip use the same calibrated frequency, so scale the tick
+            # intersection using either interval's ticks/ns ratio.
+            topk_ticks = topk_record["end_tick"] - topk_record["start_tick"]
+            overlap_ns_by_chip[chip_id] = overlap_ticks * topk_record["duration_ns"] / topk_ticks
+            assert gather_record["duration_ns"] < 0.5 * topk_record["duration_ns"]
+            assert overlap_ns_by_chip[chip_id] >= 0.9 * gather_record["duration_ns"]
+
         topk_latencies = []
         for _ in range(3):
             rank_line.load_sub_device_manager(manager)
@@ -1199,16 +1254,18 @@ def test_high_bw_all_gather_external_semaphore_independent_progress_with_topk(me
             f"isolated top-k samples were {[round(value / 1e6, 3) for value in topk_latencies]} ms"
         )
 
-        for topk_output in (warm_topk, isolated_topk, combined_topk):
+        for topk_output in (warm_topk, profiled_topk, isolated_topk, combined_topk):
             for shard in ttnn.get_device_tensors(topk_output):
                 actual = ttnn.to_torch(shard, dtype=torch.uint32).to(torch.int64)
                 assert torch.equal(actual, expected_topk)
         _assert_exact_all_gather(gather_input, warm_gather, rank_line, ttnn.bfloat16)
+        _assert_exact_all_gather(gather_input, profiled_gather, rank_line, ttnn.bfloat16)
         _assert_exact_all_gather(gather_input, combined_gather, rank_line, ttnn.bfloat16)
         print(
             f"sparse MLA overlap profile topk={topk_grid.num_cores()} gather={gather_grid.num_cores()}: "
             f"gather_progress={gather_progress_ns / 1e6:.3f} ms, "
-            f"isolated_topk_min={topk_lower_bound_ns / 1e6:.3f} ms"
+            f"isolated_topk_min={topk_lower_bound_ns / 1e6:.3f} ms, "
+            f"device_overlap_us={[round(value / 1e3, 3) for value in overlap_ns_by_chip.values()]}"
         )
     finally:
         ttnn.synchronize_device(rank_line)

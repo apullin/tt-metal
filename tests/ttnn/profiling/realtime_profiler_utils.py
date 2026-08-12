@@ -26,6 +26,7 @@ def profile_realtime_program(
     import ttnn
 
     profile_records = []
+    invalid_profile_records = []
 
     def collect_records(batch):
         for record in batch.records:
@@ -36,12 +37,18 @@ def profile_realtime_program(
             end_timestamp = int(record.end_timestamp)
             frequency = float(record.frequency)
             if frequency <= 0 or end_timestamp <= start_timestamp:
+                invalid_profile_records.append(
+                    (int(record.runtime_id), int(record.chip_id), start_timestamp, end_timestamp, frequency)
+                )
                 continue
 
             profile_records.append(
                 {
                     "runtime_id": int(record.runtime_id),
                     "chip_id": int(record.chip_id),
+                    "start_timestamp": start_timestamp,
+                    "end_timestamp": end_timestamp,
+                    "frequency": frequency,
                     "duration_ns": (end_timestamp - start_timestamp) / frequency,
                     "kernel_sources": tuple(str(source) for source in record.kernel_sources),
                 }
@@ -73,7 +80,8 @@ def profile_realtime_program(
     if not profile_records:
         raise RuntimeError(
             "Real-time profiler returned no valid program records. "
-            "Ensure the profiler is active and the measured op dispatched a device program."
+            "Ensure the profiler is active and the measured op dispatched a device program. "
+            f"Invalid raw records: {invalid_profile_records}"
         )
 
     return result, profile_records if collect_all else profile_records[0]
