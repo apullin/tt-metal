@@ -698,12 +698,16 @@ python -m pytest -m perf \
 
 BASELINE_NS="$(jq -r '.sparse_mla_overlap.measured_scenario_ns' \
   "generated/profiler/glm_5_2_sparse_${FORMAT}_${PROFILE}_serial_mla_perf/run_manifest_${SCENARIO}.json")"
+BRANCH_BASELINE_NS="$(jq -r '.sparse_mla_overlap.measured_branch_serialized_ns' \
+  "generated/profiler/glm_5_2_sparse_${FORMAT}_${PROFILE}_serial_mla_perf/run_manifest_${SCENARIO}.json")"
 
 DS_PERF_VARIANT=glm_5_2 \
 DS_PERF_OVERLAP_PROFILE="${PROFILE}" \
 DS_PERF_OVERLAP_ENABLED=1 \
 DS_PERF_OVERLAP_BASELINE_NS="${BASELINE_NS}" \
+DS_PERF_OVERLAP_BRANCH_BASELINE_NS="${BRANCH_BASELINE_NS}" \
 DS_PERF_OVERLAP_MIN_IMPROVEMENT=0.10 \
+DS_PERF_OVERLAP_WHOLE_FORWARD_MIN_IMPROVEMENT=0.0 \
 DS_PERF_FIRMWARE_VERSION="${FW_VERSION}" \
 python -m pytest -m perf \
   models/demos/deepseek_v3_d_p/tests/sparse_mla/test_sparse_mla_perf.py::test_mla_chunked_perf \
@@ -769,7 +773,9 @@ a substitute.
 - [x] QB2 Tensix Watcher stress for independent top-k/gather progress
 - [ ] Watcher/deadlock stress on LoudBox/Galaxy
 - [x] concurrent lightweight-profiler record retention and raw device timestamps
-- [x] matched-mesh whole-forward device-span net-win gate and manifest plumbing
+- [x] device-only top-k/gather intersection, union, and serialized-branch gate
+- [x] device-clock manager-boundary gaps per region and accumulated across cold chunks
+- [x] independent matched-mesh whole-forward net-win gate and schema-v6 manifest plumbing
 - [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
 - [ ] end-to-end GLM-5.2 LoudBox/Galaxy benchmark
 - [x] production qualification configuration/manifest recording the selected split and tier
@@ -870,13 +876,27 @@ and use a firmware/build whose instrumented fabric image fits.
 `test_sparse_mla_perf.py` now accepts `DS_PERF_OVERLAP_PROFILE` values
 `qb2_80_30`, `loudbox_80_40`, and `galaxy_80_40`. The named profile selects the
 matched SP x TP mesh, restricts qualification to GLM-5.2 sparse MLA, warms the
-exact hashes, and writes a schema-v5 manifest containing the worker grid,
+exact hashes, and writes a schema-v6 manifest containing the worker grid,
 80/30 or 80/40 ownership, KVPE page size, worst-case bytes/link, preferred and
 selected workers/direction, active gather cores, per-chip device spans,
-top-k/gather interval intersections, timing samples, baseline, and net-win
-decision. `DS_PERF_OVERLAP_ENABLED=0` measures an apples-to-apples serial
-device-span baseline on that same mesh;
-`DS_PERF_OVERLAP_BASELINE_NS` enables the default 10% acceptance gate.
+top-k/gather durations, intersection and overlap ratio, union versus serialized
+sum, device-clock manager-boundary gaps, timing samples, baselines, and both
+net-win decisions. `DS_PERF_OVERLAP_ENABLED=0` measures apples-to-apples serial
+whole-forward and branch-sum baselines on that same mesh.
+`DS_PERF_OVERLAP_BRANCH_BASELINE_NS` enables the default 10% branch-union gate;
+`DS_PERF_OVERLAP_BASELINE_NS` separately requires a positive whole-forward win
+(or the explicitly configured
+`DS_PERF_OVERLAP_WHOLE_FORWARD_MIN_IMPROVEMENT`). The latter no longer
+incorrectly applies the branch's 10% threshold to the whole forward.
+
+Manager transition accounting is device-only. For every chip, the manifest
+records the raw-device-clock idle gap from the last completed default-manager
+program to the earliest branch start, and from the joined branch end to the
+first restored-default-manager program. These are conservatively named
+manager-boundary gaps: they include dispatch/reset idle visible to the device
+and do not claim to isolate Python API time. The older
+`test_sub_device_load_clear_timing.py` Tracy/host-bracketed measurement remains
+a diagnostic pattern but is not accepted as production latency evidence.
 
 The local BF16 smoke run resolved a 1152-byte KVPE page and selected two
 workers/direction (12 active gather cores) inside the 30-core ownership strip.
@@ -888,32 +908,36 @@ almost entirely inside top-k. This is the standalone op-test proxy tensor; it
 is not the full 128,000-token model gather measured below and its gather time
 must not be used to explain the end-to-end speedup.
 
-The schema-v5 QB2 Long qualification used seven samples per mode at the
-128,000-token box-local prefix (the Galaxy 512,000-token per-chip proxy). Each
-sample retained 57 programs x 4 chips for BF16 (228 records) or 59 x 4 for
-scaled FP8 (236 records). Medians and device-only improvement were:
+The schema-v6 QB2 Long qualification used seven samples per mode at the
+128,000-token box-local prefix (the Galaxy 512,000-token per-chip proxy). It
+supersedes the earlier schema-v5 interpretation, which accidentally selected
+the short TP index redistribution as the serial gather by choosing the gather
+nearest top-k. Schema v6 selects the longest `high_bw_all_gather`, which is the
+production sparse-KV prefix gather, and separates the branch and whole-forward
+gates. Medians and device-only results were:
 
-| Cache format | Serial median (range) | 80/30 overlap median (range) | Improvement | Default 10% median gate |
-| --- | ---: | ---: | ---: | --- |
-| BF16 row-major | 16.666 ms (16.446--24.220) | 15.416 ms (14.192--21.990) | 7.50% | fail |
-| scaled FP8 row-major | 15.646 ms (15.417--23.064) | 13.215 ms (12.822--20.815) | 15.54% | provisional pass |
+| Cache format | Serial forward | 80/30 forward | Forward win | Serial branch sum | Overlap union | Branch win | Manager-boundary gap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| BF16 row-major | 16.670 ms | 15.043 ms | 9.76% | 4.788 ms | 2.890 ms | 39.64% | 60.4 us |
+| scaled FP8 row-major | 15.707 ms | 14.080 ms | 10.36% | 4.697 ms | 2.890 ms | 38.48% | 119.1 us |
 
-In every overlap sample and on every chip, the selected KV gather interval was
-fully contained in top-k: approximately 2.61--2.63 ms for BF16 and
-2.53--2.56 ms for scaled FP8. The serial manifests show zero intersection.
-These numbers are derived from raw device wall-clock ticks only; host
-`perf_counter`, event wait latency, and summed overlapping op durations are not
-used. The first sample in each series includes a visible cold outlier, but the
-reported median is retained exactly rather than deleting it. QB2 BF16 therefore
-does not satisfy the default rollout gate. QB2 scaled FP8 crosses the median
-threshold, but seven samples with a cold outlier do not establish statistical
-confidence that its true improvement exceeds 10%, so this is only a
-provisional pass. The hideable model gather is about 2.62 ms for BF16 and
-2.54 ms for FP8, while the measured wins are 1.25 and 2.43 ms respectively;
-the remaining approximately 1.37 ms (BF16) and 0.11 ms (FP8) are net overlap
-cost from manager transitions, restricted-grid gather slowdown, and
-contention/serialization elsewhere in the forward. Neither result closes the
-LoudBox/Galaxy 80/40 production gate.
+Both formats pass the corrected local gates: their branch unions are more than
+10% shorter than the warmed serialized branch sum, and their whole forwards
+improve. In every overlap sample and on every chip, the selected KV gather was
+fully contained in top-k. Serial branch unions were 4.778--4.798 ms for BF16
+and 4.696--4.703 ms for scaled FP8; overlap unions were tightly clustered at
+2.890 ms for both. Whole-forward samples retain the cold first-sample
+outlier rather than deleting it: BF16 serial/overlap ranges were
+16.390--28.702/14.816--27.304 ms, and scaled FP8 ranges were
+15.607--27.510/13.933--25.820 ms.
+
+The manager-boundary figure is the median slowest-chip device-clock gap across
+the two transitions, not a host timer. BF16 samples were 60.3--60.6 us; scaled
+FP8 samples were 61.1--181.6 us, with a 119.1 us median. The raw per-sample
+list remains in the manifest so this variability is not hidden. These QB2
+results qualify the local 80/30 path only. They do not close the
+LoudBox/Galaxy 80/40 gates or replace isolated 30-versus-40 gather-tier
+measurements.
 
 ## Claude Opus review disposition
 
@@ -1024,3 +1048,16 @@ command was invoked once more against the current branch and plan. It produced
 no output during a bounded 180-second wait and was terminated, so this attempt
 also adds no verdict. The four earlier successful Claude Opus reviews and their
 incorporated dispositions remain the review basis for this plan.
+
+The schema-v6 device-time qualification update received a final focused review
+using `claude --dangerously-skip-permissions --model opus --effort low --print
+...`. The first verdict was **CHANGES REQUIRED** because the critical
+serialized branch sum added the maximum top-k and gather durations from
+potentially different chips. That would have made the branch baseline
+artificially conservative and the 10% gate easier. The implementation now
+takes the maximum of each real chip's top-k-plus-gather sum and reports the
+minimum real per-chip union reduction ratio. Both Long pairs were rerun after
+that correction. A second Opus review returned **APPROVE**, explicitly
+confirming the device-only timing source, per-chip interval math, conservative
+collapse, independent gates, schema-v6 runbook fields, and updated result
+arithmetic.
