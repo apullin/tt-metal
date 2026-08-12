@@ -313,6 +313,11 @@
 
 - name: Qwen2.5-Coder-32B e2e tests (Blackhole)
   cmd: |
+    # TEMPORARY (remove before merge): this checkpoint is not yet in the
+    # yyz4-mnt-models hub cache that bh_quietbox_2 mounts, so the first run must
+    # download it. Dispatch once with mlperf-read-only=false to seed the cache,
+    # then drop this line so nightlies run offline like the sibling Qwen entries.
+    export HF_HUB_OFFLINE=0
     export HF_MODEL=Qwen/Qwen2.5-Coder-32B-Instruct TT_CACHE_PATH=/mnt/MLPerf/huggingface/tt_cache/Qwen/Qwen2.5-Coder-32B-Instruct
     pytest --timeout 4200 models/tt_transformers/demo/simple_text_demo.py -k "performance-ci-token-matching"
     pytest --timeout 1800 models/tt_transformers/demo/simple_text_demo.py -k "performance-ci-eval-32"
@@ -320,7 +325,7 @@
   model_family: Qwen
   skus:
     bh_quietbox_2:
-      timeout: 15
+      timeout: 45
       tier: 2
       release_ready: false
   owner_id: U03PUAKE719 # Miguel Tairum Cruz
