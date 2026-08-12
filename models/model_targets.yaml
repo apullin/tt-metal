@@ -1516,16 +1516,20 @@ targets:
             owner_id: U088413NP0Q # Ashai Reddy Ginuga
             team: models
 
-  # ResNet-50 is tier 1 as of #52829, so unlike the other models migrated in that PR it is
-  # NOT exempt from targets -- tier 3 is exempt from perf but tier 1 is not.
+  # ResNet-50 is tier 1, so unlike the tier-3 models migrated alongside it, it is not
+  # exempt from targets. The values below are measured, not placeholders:
+  #   wh_n150        batch 16   top1 75.375   fps 28.43   (run 31590127406)
+  #   wh_llmbox_perf batch 128  top1 75.456   fps 29.05   (run 31606078371)
   #
-  # Only the two e2e SKUs are listed: validate_perf_targets.py's _collect_active_test_combos
-  # walks models_e2e_tests.yaml alone, so the unit (wh_llmbox) and device-perf
-  # (wh_n300_civ2, bh_p150b_civ2) combos are never gap-checked.
+  # Only the two e2e SKUs are listed -- validate_perf_targets.py's
+  # _collect_active_test_combos walks models_e2e_tests.yaml alone, so unit and device-perf
+  # combos are never gap-checked.
   #
-  # status: TODO because the demos emit no benchmark payload today -- they assert their own
-  # thresholds inline and write nothing to generated/benchmark_data, so the verifier step is
-  # skipped entirely. Populate perf/accuracy once the tests report one.
+  # top1 and fps come from the vision measurement pair registered in
+  # validate_perf_targets.py: ("inference", "top1_accuracy") and ("inference", "fps"),
+  # emitted by run_resnet_imagenet_inference. Accuracy is held tight at 1% because it was
+  # reproducible to three decimals across both SKUs; fps gets 15% because throughput on
+  # shared CI hosts is far noisier than correctness.
   resnet50:
     aliases: ["ResNet-50", "resnet50", "ResNet50", "microsoft/resnet-50"]
     skus:
@@ -1533,17 +1537,25 @@ targets:
         entries:
           - batch_size: 16
             seq_len: null
-            status: TODO
-            perf: {}
-            accuracy: {}
+            status: active
+            perf:
+              fps: 28.43
+              fps_tolerance: 0.15
+            accuracy:
+              top1: 75.375
+              top1_tolerance: 0.01
             owner_id: U085GDCAZTN # Pavle Josipovic
             team: ttnn
       wh_llmbox_perf:
         entries:
-          - batch_size: 16
+          - batch_size: 128
             seq_len: null
-            status: TODO
-            perf: {}
-            accuracy: {}
+            status: active
+            perf:
+              fps: 29.05
+              fps_tolerance: 0.15
+            accuracy:
+              top1: 75.456
+              top1_tolerance: 0.01
             owner_id: U085GDCAZTN # Pavle Josipovic
             team: ttnn

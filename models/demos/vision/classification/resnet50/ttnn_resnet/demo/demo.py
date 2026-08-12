@@ -3,18 +3,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+import os
+
 import torch
 from loguru import logger
 from transformers import AutoImageProcessor
 
 import ttnn
 from models.common.utility_functions import profiler
+from models.demos.utils.device_sku import get_current_device_sku_name
 from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.demo_utils import (
     get_batch,
     get_data,
     get_data_loader,
 )
 from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.resnet50_test_infra import create_test_infra
+from models.perf.benchmarking_utils import BenchmarkProfiler, create_benchmark_data
 
 resnet_model_config = {
     "MATH_FIDELITY": ttnn.MathFidelity.LoFi,
@@ -109,10 +113,34 @@ def run_resnet_imagenet_inference(
     # ensuring inference time fluctuations is not noise
     inference_time_avg = profiler.get("run") / (iterations)
 
+    fps = batch_size / inference_time_avg
     logger.info(
-        f"ttnn_{model_version}_batch_size{batch_size} tests inference time (avg): {inference_time_avg}, FPS: {batch_size/inference_time_avg}"
+        f"ttnn_{model_version}_batch_size{batch_size} tests inference time (avg): {inference_time_avg}, FPS: {fps}"
     )
     logger.info(f"ttnn_{model_version}_batch_size{batch_size} compile time: {compile_time}")
+
+    # CI-dashboard telemetry. Until this existed the accuracy and FPS above were only ever
+    # logged, so models/model_targets.yaml could not gate on them and every ResNet-50 entry
+    # sat at status: TODO. create_benchmark_data / save_partial_run_json are no-ops unless
+    # CI == "true" (they guard internally); the is_ci_env check keeps the import off the
+    # local path too. Measurement names are the vision pair registered in
+    # .github/scripts/utils/validate_perf_targets.py -- top1_accuracy and fps under an
+    # "inference" step, as opposed to the LLM inference_decode/token pair.
+    if os.environ.get("CI") == "true":
+        benchmark_profiler = BenchmarkProfiler()
+        benchmark_profiler.start("run")
+        benchmark_profiler.end("run")
+        benchmark_data = create_benchmark_data(benchmark_profiler, {}, {"inference": 0}, targets={})
+        benchmark_data.add_measurement(benchmark_profiler, 0, "inference", "top1_accuracy", accuracy * 100, target=None)
+        benchmark_data.add_measurement(benchmark_profiler, 0, "inference", "fps", fps, target=None)
+        benchmark_data.save_partial_run_json(
+            benchmark_profiler,
+            run_type="demo",
+            ml_model_name=model_version,
+            ml_model_type="cnn",
+            device_name=get_current_device_sku_name(),
+            batch_size=batch_size,
+        )
 
 
 def run_resnet_inference(
