@@ -106,12 +106,12 @@ but the test itself sweeps the full matrix via parametrization.
 
 Overlap qualification is explicit: set DS_PERF_OVERLAP_PROFILE to qb2_80_30, loudbox_80_40, or
 galaxy_80_40. This restricts the useful matrix to GLM-5.2 sparse cases, selects the corresponding SP×TP
-mesh, and records whole-forward completion-event samples plus the exact ownership split and resolved
+mesh, and records whole-forward device critical-path samples plus the exact ownership split and resolved
 gather worker tier in the manifest. First run the same named profile with DS_PERF_OVERLAP_ENABLED=0 to
-obtain an apples-to-apples serial completion-event baseline on the same mesh; then run enabled with that
-result in DS_PERF_OVERLAP_BASELINE_NS to enforce DS_PERF_OVERLAP_MIN_IMPROVEMENT (default 10%). Completion
-events are deliberate here: the current realtime transport has one dispatch timestamp slot and can drop
-one of two concurrent sub-device records, making its per-op sum invalid for an overlapped forward.
+obtain an apples-to-apples serial device-time baseline on the same mesh; then run enabled with that result
+in DS_PERF_OVERLAP_BASELINE_NS to enforce DS_PERF_OVERLAP_MIN_IMPROVEMENT (default 10%). Each sample is
+computed independently on every chip from the earliest raw device start tick to the latest raw device end
+tick, then collapsed with max across chips. Host dispatch and synchronization time is excluded.
 LoudBox/Galaxy qualification also requires DS_PERF_FIRMWARE_VERSION; it is copied verbatim into the
 manifest rather than guessed from source or silently omitted.
 
@@ -128,7 +128,6 @@ import datetime
 import json
 import os
 import statistics
-import time
 from dataclasses import dataclass
 
 import pandas as pd
@@ -193,20 +192,19 @@ RT_RECORD_TIMEOUT_S = float(os.environ.get("DS_PERF_RT_TIMEOUT", 30.0))
 RT_OPS_DUMP = os.environ.get("DS_PERF_RT_OPS_DUMP", "") not in ("", "0", "false")
 
 # Explicit rollout/qualification mode. Empty keeps the historical serial perf matrix. A named profile
-# restricts the matrix to GLM-5.2 sparse MLA and switches whole-forward timing to a completion event:
-# the realtime profiler currently has one dispatch timestamp slot and can drop one of two concurrent
-# sub-device programs, so summing its records would under-report an overlapped forward.
+# restricts the matrix to GLM-5.2 sparse MLA and switches reporting from a sum of program durations to
+# the whole-forward device-clock span, which remains valid when sub-device programs overlap.
 OVERLAP_PROFILE = os.environ.get("DS_PERF_OVERLAP_PROFILE", "").strip().lower() or None
 OVERLAP_ENABLED = OVERLAP_PROFILE is not None and os.environ.get("DS_PERF_OVERLAP_ENABLED", "1").lower() not in (
     "0",
     "false",
     "off",
 )
-OVERLAP_EVENT_SAMPLES = int(os.environ.get("DS_PERF_OVERLAP_SAMPLES", 5))
+OVERLAP_DEVICE_SAMPLES = int(os.environ.get("DS_PERF_OVERLAP_SAMPLES", 5))
 OVERLAP_BASELINE_NS = float(os.environ.get("DS_PERF_OVERLAP_BASELINE_NS", 0.0)) or None
 OVERLAP_MIN_IMPROVEMENT = float(os.environ.get("DS_PERF_OVERLAP_MIN_IMPROVEMENT", 0.10))
 QUALIFICATION_FIRMWARE = os.environ.get("DS_PERF_FIRMWARE_VERSION")
-if OVERLAP_EVENT_SAMPLES < 1:
+if OVERLAP_DEVICE_SAMPLES < 1:
     raise ValueError("DS_PERF_OVERLAP_SAMPLES must be at least 1")
 
 
@@ -368,8 +366,8 @@ def _write_run_manifest(
         )
         head = _git_head()
         manifest = {
-            "schema_version": 4,
-            "profiler": "device_completion_event" if overlap_qualification else "realtime",
+            "schema_version": 5,
+            "profiler": "realtime_device_span" if overlap_qualification else "realtime",
             "variant": variant,
             "scenario": scenario,
             "attn_mode": attn_mode,
@@ -627,7 +625,11 @@ def _profile_forward(mesh_device, run_fn) -> dict:
     (dispatch) order — the profiler delivers records in program order; verified equal to the device
     start-tick order across every case/forward — so callers get the ops in program order for free."""
     _, records = profile_realtime_program(
-        mesh_device, run_fn, collect_all=True, record_timeout_seconds=RT_RECORD_TIMEOUT_S
+        mesh_device,
+        run_fn,
+        collect_all=True,
+        drain_before_run=True,
+        record_timeout_seconds=RT_RECORD_TIMEOUT_S,
     )
     per_program: dict = {}
     for record in records:
@@ -644,20 +646,91 @@ def _profile_forward(mesh_device, run_fn) -> dict:
     return per_program
 
 
-def _profile_forward_completion_event(mesh_device, run_fn, *, overlap_enabled: bool) -> dict:
-    """Measure one complete overlap-enabled forward without relying on lossy concurrent RT records."""
-    start_ns = time.perf_counter_ns()
-    run_fn()
-    complete = ttnn.record_event(mesh_device, 0)
-    ttnn.event_synchronize(complete)
-    duration_ns = time.perf_counter_ns() - start_ns
-    return {
+def _profile_forward_device_span(mesh_device, run_fn, *, overlap_enabled: bool) -> tuple[dict, dict]:
+    """Measure a forward using device clocks only.
+
+    Device wall clocks are not synchronized across chips, so each chip's span is calculated locally
+    before taking the slowest-chip maximum. Concurrent program durations are deliberately not summed.
+    The returned diagnostics retain the per-chip spans and the top-k/gather interval intersection.
+    """
+    _, records = profile_realtime_program(
+        mesh_device,
+        run_fn,
+        collect_all=True,
+        drain_before_run=True,
+        record_timeout_seconds=RT_RECORD_TIMEOUT_S,
+    )
+    records = [record for record in records if record["runtime_id"]]
+    assert records, "real-time profiler returned no valid program records for the measured forward"
+
+    records_by_chip: dict[int, list] = {}
+    for record in records:
+        records_by_chip.setdefault(record["chip_id"], []).append(record)
+
+    chip_spans_ns = {}
+    overlap_by_chip = {}
+    record_counts_by_chip = {chip_id: len(chip_records) for chip_id, chip_records in records_by_chip.items()}
+    assert (
+        len(set(record_counts_by_chip.values())) == 1
+    ), f"device-span profile has unequal per-chip record counts: {record_counts_by_chip}"
+    for chip_id, chip_records in records_by_chip.items():
+        start_tick = min(record["start_timestamp"] for record in chip_records)
+        end_tick = max(record["end_timestamp"] for record in chip_records)
+        frequency = statistics.median(record["frequency"] for record in chip_records)
+        chip_spans_ns[chip_id] = (end_tick - start_tick) / frequency
+
+        topk_records = []
+        gather_records = []
+        for record in chip_records:
+            sources = tuple(source.replace("\\", "/") for source in record["kernel_sources"])
+            if any("/experimental/topk_large_indices/" in source for source in sources):
+                topk_records.append(record)
+            if any("/experimental/high_bw_all_gather/" in source for source in sources):
+                gather_records.append(record)
+        intersections = [
+            (
+                min(topk["end_timestamp"], gather["end_timestamp"])
+                - max(topk["start_timestamp"], gather["start_timestamp"]),
+                gather,
+            )
+            for topk in topk_records
+            for gather in gather_records
+        ]
+        if intersections:
+            overlap_ticks, gather = max(intersections, key=lambda item: item[0])
+            overlap_by_chip[chip_id] = {
+                "overlap_ns": max(0, overlap_ticks) / gather["frequency"],
+                "gather_duration_ns": gather["duration_ns"],
+            }
+
+    expected_chips = mesh_device.get_num_devices()
+    assert (
+        len(chip_spans_ns) == expected_chips
+    ), f"device-span profile covered {len(chip_spans_ns)} chips, expected {expected_chips}: {chip_spans_ns}"
+    if overlap_enabled:
+        assert len(overlap_by_chip) == expected_chips, (
+            "overlap profile did not retain top-k and gather intervals on every chip: "
+            f"covered={sorted(overlap_by_chip)} expected={sorted(records_by_chip)}"
+        )
+        assert all(item["overlap_ns"] > 0 for item in overlap_by_chip.values()), overlap_by_chip
+
+    duration_ns = max(chip_spans_ns.values())
+    synthetic = {
         1: {
             "duration_ns": float(duration_ns),
             "kernel_sources": (),
             "op_code": "SparseMlaForwardOverlap" if overlap_enabled else "SparseMlaForwardSerial",
         }
     }
+    diagnostics = {
+        "chip_spans_ns": {str(chip_id): span for chip_id, span in sorted(chip_spans_ns.items())},
+        "topk_gather_overlap_by_chip": {
+            str(chip_id): interval for chip_id, interval in sorted(overlap_by_chip.items())
+        },
+        "program_record_count": len(records),
+        "record_counts_by_chip": {str(chip_id): count for chip_id, count in sorted(record_counts_by_chip.items())},
+    }
+    return synthetic, diagnostics
 
 
 def _programs_to_frame(per_program: dict, dur_col: str) -> pd.DataFrame:
@@ -765,10 +838,7 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
         pytest.skip("DS_PERF_OVERLAP_PROFILE qualifies only GLM-5.2 sparse MLA")
     if OVERLAP_PROFILE in ("loudbox_80_40", "galaxy_80_40") and not QUALIFICATION_FIRMWARE:
         pytest.fail("production overlap qualification requires DS_PERF_FIRMWARE_VERSION for the run manifest")
-    # Assert profiler activation only for serial runs. Overlap runs use a full-forward completion event
-    # because the current realtime transport cannot retain both concurrent sub-device records.
-    if not OVERLAP_PROFILE:
-        _require_rt_profiler()
+    _require_rt_profiler()
 
     scenario_cfg = SCENARIOS[scenario]
     is_cold = scenario_cfg["loop"]
@@ -937,22 +1007,31 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
         # Warm every structural hash before event timing; host compilation must not masquerade as device latency.
         _one_forward(starts[0])
         ttnn.synchronize_device(mesh_device)
-        measured_starts = starts if is_cold else [starts[0]] * OVERLAP_EVENT_SAMPLES
+        measured_starts = starts if is_cold else [starts[0]] * OVERLAP_DEVICE_SAMPLES
+        device_span_diagnostics = []
+        expected_program_record_count = None
         try:
             for start in measured_starts:
-                forwards.append(
-                    _profile_forward_completion_event(
-                        mesh_device,
-                        lambda start=start: _one_forward(start),
-                        overlap_enabled=OVERLAP_ENABLED,
-                    )
+                profiled_forward, diagnostics = _profile_forward_device_span(
+                    mesh_device,
+                    lambda start=start: _one_forward(start),
+                    overlap_enabled=OVERLAP_ENABLED,
                 )
+                forwards.append(profiled_forward)
+                device_span_diagnostics.append(diagnostics)
+                if expected_program_record_count is None:
+                    expected_program_record_count = diagnostics["program_record_count"]
+                else:
+                    assert diagnostics["program_record_count"] == expected_program_record_count, (
+                        "device-span profiler record count changed between identical samples: "
+                        f"expected={expected_program_record_count} actual={diagnostics['program_record_count']}"
+                    )
         finally:
             if OVERLAP_ENABLED:
                 mla.release_sparse_mla_overlap_manager()
-        event_samples_ns = [next(iter(per_forward.values()))["duration_ns"] for per_forward in forwards]
-        median_ns = statistics.median(event_samples_ns)
-        measured_ns = sum(event_samples_ns) if is_cold else median_ns
+        device_samples_ns = [next(iter(per_forward.values()))["duration_ns"] for per_forward in forwards]
+        median_ns = statistics.median(device_samples_ns)
+        measured_ns = sum(device_samples_ns) if is_cold else median_ns
         improvement = None
         if OVERLAP_ENABLED and OVERLAP_BASELINE_NS is not None:
             improvement = 1.0 - measured_ns / OVERLAP_BASELINE_NS
@@ -962,7 +1041,9 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
             )
         overlap_qualification.update(
             {
-                "timing_samples_ns": event_samples_ns,
+                "timing_source": "realtime_raw_device_ticks_per_chip_span",
+                "timing_samples_ns": device_samples_ns,
+                "device_span_diagnostics": device_span_diagnostics,
                 "median_forward_ns": median_ns,
                 "measured_scenario_ns": measured_ns,
                 "serial_baseline_ns": OVERLAP_BASELINE_NS,
@@ -1008,7 +1089,7 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
             f"Galaxy target: {CHUNK_TOKENS}-tok chunk @ {galaxy_cache}-tok cache, SP={GALAXY_SP}×TP={GALAXY_TP}; "
             f"local chunk={CHUNK_TOKENS // GALAXY_SP}, local MLA heads={workload.num_attention_heads // GALAXY_TP}",
             f"critical-path time over the {'prefill' if is_cold else 'chunk'} "
-            f"({'completion-event whole forward' if OVERLAP_PROFILE else 'realtime profiler; per-program max across chips'}): "
+            f"({'realtime device span; slowest chip' if OVERLAP_PROFILE else 'realtime profiler; per-program max across chips'}): "
             f"{total_ns/1e6:.3f} ms across {int(by_op['count'].sum())} device programs",
             "(OP CODE = tracy-style op code mapped from kernel sources; see module docstring)",
             header,

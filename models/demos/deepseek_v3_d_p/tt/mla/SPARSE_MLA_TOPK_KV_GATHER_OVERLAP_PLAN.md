@@ -172,6 +172,42 @@ Exit criteria:
 - the combined interval is less than the sum of isolated intervals after warmup;
 - no program in either branch uses a core owned by the other branch.
 
+#### Lightweight-profiler concurrency support
+
+The device profiler must retain one interval per dispatched program even when
+independent subdevices complete out of dispatch order. The implementation:
+
+- patches the exact 16-bit runtime ID into each dispatch-s go command instead
+  of correlating timestamps through the asynchronous legacy ID FIFO. IDs wrap
+  modulo 65,536; dispatch-s permits only one active program per stream, and
+  this workload has at most eight streams and fewer than 65,536 commands in
+  flight, so two active records on one stream cannot share an ID;
+- tracks active runtime ID, start tick, completion count, and end tick
+  independently for every dispatch-s worker stream;
+- timestamps every completion-counter transition from the dispatch-s compute
+  monitor, then selects the transition matching the exact cumulative
+  `wait_count` in the next go/flush command. A later flush on another
+  subdevice therefore cannot inflate the interval, and programs need not use
+  every worker owned by their subdevice;
+- queues completed records in dispatch-s L1 and drains them through an
+  acknowledged transport, preventing two close completions from overwriting
+  the former shared A/B notification slot. The queue holds 128 records; when
+  full, dispatch-s drains and stalls for acknowledgment rather than dropping
+  or overwriting a record;
+- exposes raw `start_timestamp`, `end_timestamp`, and calibrated `frequency`
+  through `profile_realtime_program`, in addition to the derived duration.
+
+The op-level regression requires distinct top-k and gather runtime IDs on
+every chip, positive raw-tick intersection, and at least 90% of each gather
+interval to lie inside top-k. The end-to-end harness computes a device-only
+forward span locally on each chip (`latest end - earliest start`) and takes the
+maximum span across chips; it never compares absolute clocks between chips or
+adds overlapping program durations. Frequency calibration is carried on every
+record and applied within its chip before cross-chip durations are compared.
+The helper fails on receiver drop accounting, and qualification asserts equal
+per-chip counts plus a stable total count across identical samples, so missing
+records cannot silently become a shorter span.
+
 ### Phase 1: Make `topk_large_indices` sub-device/core-grid aware
 
 Update:
@@ -732,7 +768,8 @@ a substitute.
 - [x] QB2 BF16 and scaled-FP8 growing-prefix overlap correctness
 - [x] QB2 Tensix Watcher stress for independent top-k/gather progress
 - [ ] Watcher/deadlock stress on LoudBox/Galaxy
-- [x] matched-mesh whole-forward completion-event net-win gate and manifest plumbing
+- [x] concurrent lightweight-profiler record retention and raw device timestamps
+- [x] matched-mesh whole-forward device-span net-win gate and manifest plumbing
 - [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
 - [ ] end-to-end GLM-5.2 LoudBox/Galaxy benchmark
 - [x] production qualification configuration/manifest recording the selected split and tier
@@ -822,33 +859,61 @@ the current local QB2 firmware bundle (19.10.0), because enabling Watcher on
 the fabric routers makes the ACTIVE_ETH image 29,680 bytes, exceeding its
 25,600-byte kernel-config buffer during device setup. This is not an overlap
 failure: no operation is dispatched in that configuration. A full
-growing-prefix model run under Tensix Watcher later aborts in the serial
-reference `topk_large_indices` call without a Watcher fault report, before the
-overlap region. Therefore the op-level concurrent path has local Watcher
-coverage, while full-model Watcher/deadlock qualification remains an explicit
-LoudBox/Galaxy gate and must use a firmware/build whose instrumented fabric
-image fits.
+growing-prefix model run under Tensix Watcher later aborts for an undiagnosed
+reason in the serial reference `topk_large_indices` call without a Watcher
+fault report, before the overlap region. That run gives zero full-model
+coverage of the concurrent path. Therefore the op-level concurrent path has
+local Watcher coverage, while full-model Watcher/deadlock qualification
+remains an explicit LoudBox/Galaxy gate and must both diagnose the serial abort
+and use a firmware/build whose instrumented fabric image fits.
 
 `test_sparse_mla_perf.py` now accepts `DS_PERF_OVERLAP_PROFILE` values
 `qb2_80_30`, `loudbox_80_40`, and `galaxy_80_40`. The named profile selects the
 matched SP x TP mesh, restricts qualification to GLM-5.2 sparse MLA, warms the
-exact hashes, and writes a schema-v4 manifest containing the worker grid,
+exact hashes, and writes a schema-v5 manifest containing the worker grid,
 80/30 or 80/40 ownership, KVPE page size, worst-case bytes/link, preferred and
-selected workers/direction, active gather cores, timing samples, baseline, and
-net-win decision. `DS_PERF_OVERLAP_ENABLED=0` measures an apples-to-apples
-serial completion-event baseline on that same mesh;
+selected workers/direction, active gather cores, per-chip device spans,
+top-k/gather interval intersections, timing samples, baseline, and net-win
+decision. `DS_PERF_OVERLAP_ENABLED=0` measures an apples-to-apples serial
+device-span baseline on that same mesh;
 `DS_PERF_OVERLAP_BASELINE_NS` enables the default 10% acceptance gate.
 
 The local BF16 smoke run resolved a 1152-byte KVPE page and selected two
 workers/direction (12 active gather cores) inside the 30-core ownership strip.
-Its intentionally tiny 256-token proxy measured 5.743 ms serial versus 6.315
-ms overlap, so it is correctly not a production win and was not supplied as a
-passing baseline gate. LoudBox/Galaxy production shapes must establish the
-80/40 result. The current realtime-profiler transport has one dispatch
-timestamp/push slot and drops one of two concurrent sub-device records; the
-qualification harness therefore uses a full-forward device completion event
-for valid serial/overlap comparison instead of publishing a misleading summed
-RT report. The op-level sub-device event remains the direct concurrency proof.
+Earlier completion-event measurements are retained only as historical
+diagnostics and are not accepted as device-time performance evidence. The
+fixed realtime transport now emits both programs on every QB2 chip: top-k is
+about 2.246 ms, gather is about 23.7--29.0 us, and the gather interval lies
+almost entirely inside top-k. This is the standalone op-test proxy tensor; it
+is not the full 128,000-token model gather measured below and its gather time
+must not be used to explain the end-to-end speedup.
+
+The schema-v5 QB2 Long qualification used seven samples per mode at the
+128,000-token box-local prefix (the Galaxy 512,000-token per-chip proxy). Each
+sample retained 57 programs x 4 chips for BF16 (228 records) or 59 x 4 for
+scaled FP8 (236 records). Medians and device-only improvement were:
+
+| Cache format | Serial median (range) | 80/30 overlap median (range) | Improvement | Default 10% median gate |
+| --- | ---: | ---: | ---: | --- |
+| BF16 row-major | 16.666 ms (16.446--24.220) | 15.416 ms (14.192--21.990) | 7.50% | fail |
+| scaled FP8 row-major | 15.646 ms (15.417--23.064) | 13.215 ms (12.822--20.815) | 15.54% | provisional pass |
+
+In every overlap sample and on every chip, the selected KV gather interval was
+fully contained in top-k: approximately 2.61--2.63 ms for BF16 and
+2.53--2.56 ms for scaled FP8. The serial manifests show zero intersection.
+These numbers are derived from raw device wall-clock ticks only; host
+`perf_counter`, event wait latency, and summed overlapping op durations are not
+used. The first sample in each series includes a visible cold outlier, but the
+reported median is retained exactly rather than deleting it. QB2 BF16 therefore
+does not satisfy the default rollout gate. QB2 scaled FP8 crosses the median
+threshold, but seven samples with a cold outlier do not establish statistical
+confidence that its true improvement exceeds 10%, so this is only a
+provisional pass. The hideable model gather is about 2.62 ms for BF16 and
+2.54 ms for FP8, while the measured wins are 1.25 and 2.43 ms respectively;
+the remaining approximately 1.37 ms (BF16) and 0.11 ms (FP8) are net overlap
+cost from manager transitions, restricted-grid gather slowdown, and
+contention/serialization elsewhere in the forward. Neither result closes the
+LoudBox/Galaxy 80/40 production gate.
 
 ## Claude Opus review disposition
 
@@ -860,6 +925,18 @@ After adding the concrete `high_bw_all_gather` interface, Phase 2 received a
 second focused review using
 `claude --dangerously-skip-permissions --model opus --effort medium --print ...`.
 Its verdict was also **APPROVE WITH CHANGES**.
+
+The concurrent-profiler/device-span update received a third bounded review
+using `claude --dangerously-skip-permissions --model opus --effort low
+--print ...`. Its verdict was **APPROVE WITH CHANGES**. The required changes
+are incorporated above: the op proxy and Long gather are distinguished,
+hidden time is reconciled with the net win, seven-sample dispersion and the
+provisional FP8 gate are explicit, 16-bit ID wrap and 128-record queue behavior
+are specified, missing records and per-chip calibration are covered, and the
+full-model Watcher abort is labeled undiagnosed with zero concurrent coverage.
+A final bounded re-review with the same Opus command/model returned
+**APPROVE**, with no remaining concerns in the corrected profiler and
+device-timing sections.
 
 The review's required changes are incorporated in this revision:
 

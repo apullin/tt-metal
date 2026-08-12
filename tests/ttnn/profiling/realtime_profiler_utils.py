@@ -29,10 +29,13 @@ def profile_realtime_program(
 
     profile_records = []
     invalid_profile_records = []
+    dropped_profile_records = 0
     records_lock = threading.Lock()
 
     def collect_records(batch):
+        nonlocal dropped_profile_records
         with records_lock:
+            dropped_profile_records += int(batch.dropped)
             for record in batch.records:
                 if profile_records and not collect_all:
                     return
@@ -82,6 +85,7 @@ def profile_realtime_program(
             with records_lock:
                 profile_records.clear()
                 invalid_profile_records.clear()
+                dropped_profile_records = 0
 
         result = run_fn()
         ttnn.synchronize_device(device)
@@ -110,5 +114,7 @@ def profile_realtime_program(
             "Ensure the profiler is active and the measured op dispatched a device program. "
             f"Invalid raw records: {invalid_profile_records}"
         )
+    if dropped_profile_records:
+        raise RuntimeError(f"Real-time profiler dropped {dropped_profile_records} measured program records")
 
     return result, profile_records if collect_all else profile_records[0]
