@@ -115,8 +115,9 @@ ttnn:
     wh_n150: 24
     wh_llmbox: 8
   device_perf:
+    wh_n300_civ2: 10
+    bh_p150b_civ2: 10
     wh_n150: 15
-    bh_p150: 15
   integration:
     wh_llmbox: 30
     wh_galaxy: 290

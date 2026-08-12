@@ -95,18 +95,35 @@
 # It is here by explicit request (#52829 review): the run is short and the convolution /
 # pooling teams use it day to day while developing those ops, so the signal is worth more
 # than the tier label implies. It replaces the resnet50 step removed from
-# perf-device-models-impl.yaml by that PR, keeping both the WH and BH legs the old step
-# had (N300 CIv2 -> wh_n150, P150 BH -> bh_p150).
+# perf-device-models-impl.yaml by that PR.
+#
+# SKUs match the CIv2 runners the old step used, which is load-bearing rather than
+# cosmetic. test_perf_device_resnet50.py spawns a NESTED pytest against the same device;
+# on a shared CIv1 cloud VM that nested process blocks on `CHIP_IN_USE_0_PCIe` and the
+# parent's 300 s pytest-timeout expires (seen in run 31596168974). On dedicated CIv2
+# hardware the same test has been green on main in every recent run, in ~1.5 min.
+#
+# Exact parity is not reachable for the WH leg: the old group ran on
+# `tt-ubuntu-2204-n300-stable` and no SKU in .github/sku_config.yaml maps to that label.
+# wh_n300_civ2 is the closest -- `tt-ubuntu-2204-N300-viommu-stable`, the viommu variant
+# of the same CIv2 pool. The BH leg is exact: bh_p150b_civ2 is `tt-ubuntu-2204-P150b-stable`.
 - name: ResNet-50 device perf tests
   cmd: |
-    pytest models/demos/vision/classification/resnet50/{arch_dir}/tests -m models_device_performance_bare_metal
+    pytest --timeout 600 models/demos/vision/classification/resnet50/{arch_dir}/tests -m models_device_performance_bare_metal
   model: resnet50
   skus:
+    wh_n300_civ2:
+      timeout: 10
+      arch_dir: wormhole
+    bh_p150b_civ2:
+      timeout: 10
+      arch_dir: blackhole
+    # EXPERIMENT, remove if it flakes: the CIv1 leg hung at pytest.ini's 300 s default
+    # because the nested pytest blocks on CHIP_IN_USE_0_PCIe. The nested run completed
+    # ~394 s in, so 600 s should cover it -- but that is waiting out contention rather
+    # than avoiding it. Kept only if it proves stable.
     wh_n150:
       timeout: 15
       arch_dir: wormhole
-    bh_p150:
-      timeout: 15
-      arch_dir: blackhole
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: ttnn
