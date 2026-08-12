@@ -696,6 +696,48 @@ against the shipping serial path; it is not presented as a scheduler-only
 microbenchmark. The branch manifest still reports the individual device
 intervals needed to separate placement from overlap when diagnosing a result.
 
+The separate full-model Galaxy gate uses the checked Long driver after the
+device-time matrix passes:
+
+```bash
+export GLM52_HF_MODEL=/mnt/models/deepseek-prefill-cache/GLM-5.2-FP8
+export TT_GLM52_PREFILL_TTNN_CACHE=/mnt/models/deepseek-prefill-cache/glm52_ttnn_cache
+export PREFILL_TRACE_DIR=/mnt/models/deepseek-prefill-cache/glm-traces/vllm-glm52-indexer-kcache-55k
+
+models/demos/deepseek_v3_d_p/tests/sparse_mla/run_glm52_sparse_mla_overlap_e2e.sh \
+  "<installed-firmware-bundle>"
+```
+
+This executes the exact 78-layer, 95-K-preloaded, one-5,120-token-chunk,
+ten-iteration GLM-5.2 node in serial--overlap--serial order. Iteration zero of
+each process is compilation warmup; the gate compares the candidate median
+from iterations 1--9 against the mean of the two bracketing serial medians.
+The serial medians must agree within 1%, and the candidate win must exceed the
+larger of 0.1% or twice the pooled relative sample standard deviation. Both
+limits can be explicitly overridden for an investigation, and the chosen
+values are recorded. The test asserts at runtime that serial has zero
+overlap-enabled layers and that all 21 eligible full-indexer layers use the
+observed 80-core TopK grid and 40-core gather grid in the candidate. It also
+counts dispatches: every eligible layer must run the selected branch once per
+iteration, for 210 serial or overlap calls per process.
+
+The driver rejects missing model/cache/trace assets, stale source/build
+ordering, dirty source, optimized Python assertions, a non-32-device mesh,
+hardware skips, missing or duplicate samples, firmware disagreement, excessive
+serial drift, and a candidate win that does not clear the noise-aware gate.
+It archives all three raw logs, JUnit files, observed runtime configuration,
+sample dispersion, ELF build ID, and `summary.json` under
+`generated/profiler/qualification/galaxy_80_40_e2e/`.
+
+The full-model number is deliberately labeled
+`host_wall_clock_sync_bracketed_whole_transformer_chunk`: it measures the
+production end-to-end effect, including submission overhead, and is not a
+device-time overlap claim. Raw device timestamps, branch union, manager gaps,
+and core-footprint evidence remain authoritative in the preceding sparse-MLA
+qualification matrix. The existing full-model harness is an 8 x 4 Galaxy
+test; LoudBox supplies the production-shaped 80/40 sparse-MLA layer gate, while
+final full-model production signoff is performed on Galaxy.
+
 The correctness tests carry hardware-gated `qb2_80_30`, `loudbox_80_40`, and
 `galaxy_80_40` cases. On LoudBox or Galaxy, run the matching production case;
 it executes the serial/cold/warm comparison and both BF16-RM and scaled-FP8
@@ -821,6 +863,7 @@ a substitute.
 - [x] independent matched-mesh whole-forward net-win gate and schema-v7 manifest plumbing
 - [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
 - [ ] end-to-end GLM-5.2 LoudBox/Galaxy benchmark
+- [x] fail-closed Galaxy GLM-5.2 Long serial-versus-80/40 benchmark driver
 - [x] production qualification configuration/manifest recording the selected split and tier
 - [x] Claude Opus plan reviews incorporated, with disposition recorded below
 
@@ -1154,3 +1197,18 @@ silicon commands through the safe runner, and archives mandatory Watcher and
 per-call/cold evidence with explicit pass/fail status. The final review returned
 **APPROVE** after verifying the worker/mux placement formula directly against
 the gather factory and confirming the Watcher, timestamp, and gate plumbing.
+
+The Galaxy full-model Long driver and runtime branch-accounting update received
+three high-effort Opus reviews using
+`claude --dangerously-skip-permissions --model opus --effort high --print ...`.
+The first verdict was **CHANGES REQUIRED** for a fixed-order two-process
+comparison, assertion stripping under `PYTHONOPTIMIZE`, hard-coded evidence,
+and construction-only profile proof. The driver now brackets the candidate
+with two stable serial medians, applies a dispersion-derived win threshold,
+reads firmware/build/runtime metadata, and counts every eligible layer's
+actual serial or overlap dispatch. The second review verified those fixes but
+incorrectly proposed dropping the `/8x4` cache suffix; a focused follow-up
+traced `weight_cache_path` through `run_chunked_transformer_updated`, confirmed
+that `/8x4` is the exact effective cache, and returned **APPROVE** after the
+driver also gained a non-empty flat-tensorbin preflight. No different Claude
+model was used.
