@@ -5,7 +5,7 @@
 import pytest
 
 import ttnn
-from models.common.utility_functions import run_for_wormhole_b0
+from models.common.utility_functions import run_for_n_dev, run_for_wormhole_b0
 from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.resnet50_performant import (
     run_resnet50_2cqs_inference,
     run_resnet50_inference,
@@ -14,6 +14,7 @@ from models.demos.vision.classification.resnet50.ttnn_resnet.tests.common.resnet
 )
 
 
+@run_for_n_dev(8, reason_str="8-chip ResNet-50 performant test; needs a T3000")
 @run_for_wormhole_b0()
 @pytest.mark.model_perf_t3000
 @pytest.mark.model_perf_tg
@@ -40,6 +41,7 @@ def test_run_resnet50_inference(
     )
 
 
+@run_for_n_dev(8, reason_str="8-chip ResNet-50 performant test; needs a T3000")
 @run_for_wormhole_b0()
 @pytest.mark.model_perf_t3000
 @pytest.mark.model_perf_tg
@@ -66,6 +68,7 @@ def test_run_resnet50_trace_inference(
     )
 
 
+@run_for_n_dev(8, reason_str="8-chip ResNet-50 performant test; needs a T3000")
 @run_for_wormhole_b0()
 @pytest.mark.model_perf_t3000
 @pytest.mark.model_perf_tg
@@ -92,6 +95,7 @@ def test_run_resnet50_2cqs_inference(
     )
 
 
+@run_for_n_dev(8, reason_str="8-chip ResNet-50 performant test; needs a T3000")
 @run_for_wormhole_b0()
 @pytest.mark.model_perf_t3000
 @pytest.mark.model_perf_tg

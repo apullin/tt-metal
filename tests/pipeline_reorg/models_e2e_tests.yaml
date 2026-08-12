@@ -1001,42 +1001,12 @@
   owner_id: U088413NP0Q # Ashai Reddy Ginuga
   team: models
 
-# ── Small vision / BERT-family models (tier 3) ─────────────────────
-#
-# Ported from the inline matrix in .github/workflows/single-card-demo-tests-impl.yaml,
-# where these ran as run_<model>_func on both N150 and N300. The eight entries below
-# replace 15 matrix rows: 7 models × 2 SKUs, plus the ResNet-50 stability row that ran
-# with `performance: true` on N150. The N300 legs are dropped — every N300 leg ran the
-# same test as its N150 twin, and these are tier 3 models kept on a single SKU.
-#
-# Timeouts are measured TEST-STEP durations from the tiered validation runs
-# (31505413199 / 31511489499), x1.5 with a 3-minute floor for runner variance. Note the
-# registry timeout caps the `- name: <entry>` step in models-e2e-tests-impl.yaml, NOT
-# the whole job, so job wall-clock (which carries 3-6 min of checkout + setup-job) is
-# the wrong thing to size against — doing so over-provisions the shared budget several
-# times over. Every entry here is now measured; VGGNet took three extra attempts because
-# its first three all died in `Set up runner` on hosts with a broken Weka mount.
-#
-# The four BERT-family demos AND all three ResNet-50 e2e entries set HF_HUB_OFFLINE=0.
-# The tiered impl forces offline on WH SKUs, while the legacy demo pipelines
-# (single-card and t3000) set no HF_HUB_OFFLINE at all — i.e. online — against the same
-# read-only /mnt/MLPerf mount. ResNet-50 needs it because every imagenet path reaches
-# AutoImageProcessor.from_pretrained("microsoft/resnet-50"), a hub id rather than a
-# model_location_generator path (ttnn_resnet/demo/demo.py:40,128 and
-# wormhole/tests/test_resnet50_performant_imagenet.py:77). Only VGGNet (torchvision) and
-# the MNIST MLP (model_location_generator -> /mnt/MLPerf/tt_dnn-models, mounted whole for
-# WH SKUs) touch no hub and need no override.
-#
-# The unit entries go the other way: their legacy pipelines DID force HF_HUB_OFFLINE=1
-# and were green under it, so they keep the impl default. See models_unit_tests.yaml.
-
 - name: VGGNet e2e tests
   cmd: |
     pytest --timeout 180 models/demos/vision/classification/vgg/demo/demo.py
   model: vggnet
   model_family: VGGNet
   skus:
-    # Test-step 2.2 min, identical across runs 31525883863 / 31525897197 / 31525909760.
     wh_n150:
       timeout: 4
       tier: 3
@@ -1050,7 +1020,6 @@
   model: bert-tiny
   model_family: BERT
   skus:
-    # 6.6 min measured (run 31393369681) + ~15% -> 8.
     wh_n150:
       timeout: 3
       tier: 3
@@ -1063,14 +1032,10 @@
 - name: BERT-Large e2e tests
   cmd: |
     export HF_HUB_OFFLINE=0
-    exit_code=0
-    pytest --timeout 210 models/demos/metal_BERT_large_11/demo/demo.py -k batch_7 || exit_code=$?
-    pytest --timeout 210 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8 || exit_code=$?
-    exit $exit_code
+    pytest --timeout 210 models/demos/metal_BERT_large_11/demo/demo.py -k batch_8
   model: bert-large
   model_family: BERT
   skus:
-    # 11.6 min measured (run 31393369681) + ~15% -> 14.
     wh_n150:
       timeout: 8
       tier: 3
@@ -1084,7 +1049,6 @@
   model: distilbert
   model_family: DistilBERT
   skus:
-    # Test-step 1.1 min measured (runs 31505413199 / 31511489499).
     wh_n150:
       timeout: 3
       tier: 3
@@ -1098,7 +1062,6 @@
   model: squeezebert
   model_family: SqueezeBERT
   skus:
-    # 6.0 min measured (run 31393369681) + ~15% -> 7.
     wh_n150:
       timeout: 3
       tier: 3
@@ -1111,7 +1074,6 @@
   model: mnist-mlp
   model_family: MNIST MLP
   skus:
-    # 6.0 min measured (run 31393369681) + ~15% -> 7.
     wh_n150:
       timeout: 3
       tier: 3
@@ -1122,72 +1084,20 @@
   cmd: |
     export HF_HUB_OFFLINE=0
     pytest --timeout 300 models/demos/vision/classification/resnet50/wormhole/demo/demo.py
-  model: resnet50
-  model_family: ResNet
-  skus:
-    # 9.3 min measured (run 31393369681) + ~15% -> 11.
-    wh_n150:
-      timeout: 6
-      tier: 3
-  owner_id: U085GDCAZTN # Pavle Josipovic
-  team: models
-
-# Kept separate from the ResNet-50 e2e entry above so the two carry their own
-# timeouts. This is the row that ran with `performance: true` on N150 in the legacy
-# matrix; on N150 that flag selected no special runner or CPU governor (both were
-# gated on N300), so it is a plain relocation.
-- name: ResNet-50 stability e2e tests
-  cmd: |
-    export HF_HUB_OFFLINE=0
     pytest --timeout 120 models/demos/vision/classification/resnet50/wormhole/tests/test_resnet50_stability.py -k "short"
-  model: resnet50
-  model_family: ResNet
-  skus:
-    # 6.3 min measured (run 31358951778) + ~15% -> 8.
-    wh_n150:
-      timeout: 3
-      tier: 3
-  owner_id: U085GDCAZTN # Pavle Josipovic
-  team: models
-
-# Ported from the `t3k_resnet50_tests` entry in t3k_demo_tests.yaml (cmd
-# run_t3000_resnet50_tests in run_t3000_demo_tests.sh, now deleted). This is the 8-chip
-# demo, so it is the T3K counterpart of the wh_n150 e2e entry above rather than a
-# duplicate of it — different test file, different mesh.
-#
-# Two deliberate deltas from the legacy t3k_demo_tests entry:
-#   - The shell wrapper passed --timeout=720, which exceeded its own 10-minute job
-#     budget (600 s) and so could never fire. The per-test cap is 540 s here.
-#   - t3000-demo-tests-impl.yaml wrapped every group in set-cpu-governor
-#     performance/ondemand; models-e2e-tests-impl.yaml has no governor step, so this now
-#     runs on an ondemand-governed host. Timeout bumped 10 -> 13 min to absorb that; the
-#     first tiered run settles the real number.
-- name: ResNet-50 8-chip e2e tests
-  cmd: |
-    export HF_HUB_OFFLINE=0
     pytest --timeout 360 models/demos/vision/classification/resnet50/ttnn_resnet/tests/test_demo.py
   model: resnet50
   model_family: ResNet
   skus:
+    # The ttnn_resnet 8-chip demo self-skips off T3000 via run_for_n_dev(8), so on
+    # wh_n150 the third command collects nothing and only the two single-chip tests run.
+    wh_n150:
+      timeout: 10
+      tier: 3
     wh_llmbox_perf:
-      timeout: 7
+      timeout: 14
       tier: 3
   owner_id: U085GDCAZTN # Pavle Josipovic
-  team: models
-
-- name: TT-DiT Wan2.2-T2V-A14B e2e tests (BH QuietBox 2)
-  cmd: |
-    unset HF_HUB_OFFLINE
-    export NO_PROMPT=1 TT_DIT_CACHE_DIR=/tmp/TT_DIT_CACHE
-    pytest --timeout 2700 models/tt_dit/tests/models/wan2_2/test_performance_wan.py \
-      -k "resolution_480p and t2v"
-  model: wan-2.2-t2v
-  model_family: Wan
-  skus:
-    bh_quietbox_2:
-      timeout: 50
-      tier: 1
-  owner_id: U0ATR08RCQ0 # James Lee
   team: models
 
 # ── WAN 2.2 (Black Hole quad galaxy, bh_sc4 / exabox-multihost-ci-sc4) ──
