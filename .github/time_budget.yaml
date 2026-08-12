@@ -110,6 +110,7 @@ ttnn:
     bh_quietbox_2: 85
   integration:
     wh_llmbox: 30
+    # -50: Galaxy resnet50 integration tests removed
     wh_galaxy: 290
     wh_n150_civ2: 60
     bh_p100: 30
@@ -118,6 +119,7 @@ ttnn:
   # test-framework assignment is being settled. Tracked in
   # https://github.com/tenstorrent/tt-metal/issues/44285
   profiler:
+    # -60: 3 resnet50 tracing entries removed from t3k_profiler_tests
     wh_llmbox: 90
     wh_galaxy: 50
     wh_n150_civ2: 60
@@ -312,7 +314,9 @@ models:
     bh_p150b_civ2_viommu: 110
     bh_p300: 10
   frequent:
+    # -60: common_models + resnet50 nightly moved to the tiered unit pipeline
     wh_n150: 348
+    # -60: same two entries; their N300 legs are dropped, not moved
     wh_n300: 330
     wh_n150_civ2: 30
     wh_n300_civ2: 30
@@ -346,7 +350,9 @@ models:
     bh_p300: 42
     bh_quietbox_2: 186
   e2e_tier3:
+    # +7: ResNet-50 e2e 8-chip leg, from t3k_demo_tests
     wh_llmbox_perf: 71
+    # +34: 7 migrated e2e entries (VGGNet 4, BERT-Tiny 3, BERT-Large 8, DistilBERT 3, SqueezeBERT 3, MNIST MLP 3, ResNet-50 10)
     wh_n150: 96
     wh_n300: 60
     bh_p150: 7
@@ -378,16 +384,20 @@ models:
     bh_p150: 20
     bh_quietbox_2: 50
   unit_tier3:
+    # +8: ResNet-50 unit 8-chip leg, from t3k_integration_tests
     wh_llmbox: 28
     wh_llmbox_perf: 58
+    # +24: BERT-Large unit 4 + ResNet-50 unit 20, from single_card_ttnn_models_frequent_tests
     wh_n150: 65
     wh_n300: 33
     bh_p150: 20
     bh_p300: 30
     bh_quietbox_2: 21
   integration:
+    # -15: t3k_resnet_tests moved to the tiered unit pipeline
     wh_llmbox: 407
   perf:
+    # -75: t3k_CNN_resnet50_model_perf_tests removed (tier 3 gets no model perf)
     wh_llmbox_perf: 610
     wh_galaxy: 280
     wh_galaxy_perf: 150
@@ -397,6 +407,7 @@ models:
     bh_p300: 20
     bh_quietbox_2: 80
   demo:
+    # -10: t3k_resnet50_tests moved to the tiered e2e pipeline
     wh_llmbox_perf: 1280
     wh_galaxy: 345
     wh_galaxy_perf: 150
