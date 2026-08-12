@@ -166,6 +166,9 @@ def _make_fabric_router_config(max_packet_payload_size_bytes):
             id="bh_xlarge_9472_3456_5120_x12_y8_cwimb1_rs5",
             marks=pytest.mark.skip(reason="run manually"),
         ),
+        # Unwindowed MM handoff is 43x20 tiles (~1.76 MB/core) and exceeds WH L1 (~1.39 MB).
+        # W=2 clears the bank OOM but still clashes with matmul CBs (~49 KB); W=1 (8x20 tiles,
+        # ~328 KB) leaves enough L1 for the CBs. Progress/credit counters are passed by the helper.
         pytest.param(
             MinimalMatmulStridedReduceScatterTestConfig(
                 M=9472,
@@ -178,6 +181,7 @@ def _make_fabric_router_config(max_packet_payload_size_bytes):
                 mm_core_grid=ttnn.CoreCoord(8, 7),
                 chunk_width_in_mm_blocks=2,
                 num_workers_per_link=3,
+                mm_window_blocks=1,
             ),
             id="xlarge_9472_3456_5120_y7_cwimb1_rs3_fullgrid",
         ),
