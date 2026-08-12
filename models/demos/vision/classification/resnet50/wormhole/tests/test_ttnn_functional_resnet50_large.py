@@ -264,8 +264,8 @@ def create_test_infra(device, batch_size, act_dtype, weight_dtype, math_fidelity
     ((1, ttnn.bfloat8_b, ttnn.bfloat8_b, ttnn.MathFidelity.LoFi),),
 )
 def test_resnet_50(device, batch_size, act_dtype, weight_dtype, math_fidelity, model_location_generator):
-    if ttnn.get_num_devices() != 1:
-        pytest.skip("single-chip ResNet-50 test; the 8-chip variant lives in ttnn_resnet/tests/")
+    if ttnn.get_num_devices() >= 8:
+        pytest.skip("1- and 2-chip ResNet-50 test; the 8-chip variant lives in ttnn_resnet/tests/")
     test_infra = create_test_infra(
         device, batch_size, act_dtype, weight_dtype, math_fidelity, model_location_generator=model_location_generator
     )
