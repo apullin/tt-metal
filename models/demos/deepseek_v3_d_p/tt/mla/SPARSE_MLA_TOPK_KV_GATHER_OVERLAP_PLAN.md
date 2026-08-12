@@ -918,23 +918,26 @@ gates. Medians and device-only results were:
 
 | Cache format | Serial forward | 80/30 forward | Forward win | Serial branch sum | Overlap union | Branch win | Manager-boundary gap |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| BF16 row-major | 16.670 ms | 15.043 ms | 9.76% | 4.788 ms | 2.890 ms | 39.64% | 60.4 us |
-| scaled FP8 row-major | 15.707 ms | 14.080 ms | 10.36% | 4.697 ms | 2.890 ms | 38.48% | 119.1 us |
+| BF16 row-major | 17.018 ms | 15.274 ms | 10.24% | 4.789 ms | 2.890 ms | 39.66% | 60.6 us |
+| scaled FP8 row-major | 15.517 ms | 13.501 ms | 12.99% | 4.696 ms | 2.889 ms | 38.47% | 60.6 us |
 
 Both formats pass the corrected local gates: their branch unions are more than
 10% shorter than the warmed serialized branch sum, and their whole forwards
 improve. In every overlap sample and on every chip, the selected KV gather was
-fully contained in top-k. Serial branch unions were 4.778--4.798 ms for BF16
-and 4.696--4.703 ms for scaled FP8; overlap unions were tightly clustered at
-2.890 ms for both. Whole-forward samples retain the cold first-sample
+fully contained in top-k. Serial branch unions were 4.773--4.790 ms for BF16
+and 4.686--4.706 ms for scaled FP8; overlap unions were 2.890--2.934 ms for
+BF16 and tightly clustered at 2.889--2.890 ms for scaled FP8. Whole-forward
+samples retain the cold first-sample
 outlier rather than deleting it: BF16 serial/overlap ranges were
-16.390--28.702/14.816--27.304 ms, and scaled FP8 ranges were
-15.607--27.510/13.933--25.820 ms.
+16.886--28.685/14.946--27.083 ms, and scaled FP8 ranges were
+15.227--27.601/13.204--25.767 ms.
 
 The manager-boundary figure is the median slowest-chip device-clock gap across
-the two transitions, not a host timer. BF16 samples were 60.3--60.6 us; scaled
-FP8 samples were 61.1--181.6 us, with a 119.1 us median. The raw per-sample
-list remains in the manifest so this variability is not hidden. These QB2
+the two transitions, not a host timer. BF16 samples were 60.2--103.0 us;
+scaled FP8 samples were 60.4--80.6 us. The raw per-sample list remains in the
+manifest so this variability is not hidden. These final manifests were
+captured from clean published commit `95d1b93f3a3`; their embedded commit and
+branch fields therefore reproduce the implementation under test. These QB2
 results qualify the local 80/30 path only. They do not close the
 LoudBox/Galaxy 80/40 gates or replace isolated 30-versus-40 gather-tier
 measurements.
