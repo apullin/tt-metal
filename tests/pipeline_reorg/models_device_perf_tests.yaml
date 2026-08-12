@@ -89,13 +89,10 @@
   owner_id: U08SXRPCTJ5 # Janko Mitrovic
   team: shield
 
-# ResNet-50 is a tier 3 model, so it would normally get no device-perf coverage at all --
-# tier 3 is "an end-to-end accuracy check and a unit test for the most critical module",
-# and this registry has no `tier:` field because it only feeds the Tier 1 pipeline.
-# It is here by explicit request (#52829 review): the run is short and the convolution /
-# pooling teams use it day to day while developing those ops, so the signal is worth more
-# than the tier label implies. It replaces the resnet50 step removed from
-# perf-device-models-impl.yaml by that PR.
+# ResNet-50 is tier 1, and models/model_ci_tiers.md gives tier 1 "Device OP Perf Tests:
+# Yes", so this entry is exactly where it belongs. It replaces the resnet50 step removed
+# from perf-device-models-impl.yaml by this PR, kept at review request because the
+# convolution / pooling teams use the run day to day while developing those ops.
 #
 # SKUs match the CIv2 runners the old step used, which is load-bearing rather than
 # cosmetic. test_perf_device_resnet50.py spawns a NESTED pytest against the same device;

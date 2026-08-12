@@ -311,10 +311,10 @@
   skus:
     wh_n150:
       timeout: 20
-      tier: 3
+      tier: 1
     wh_llmbox:
       timeout: 8
-      tier: 3
+      tier: 1
   owner_id: U085GDCAZTN # Pavle Josipovic
   team: ttnn
 

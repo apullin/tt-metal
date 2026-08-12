@@ -108,12 +108,16 @@ ttnn:
     bh_loudbox: 85
     bh_p300: 85
     bh_quietbox_2: 85
-  e2e_tier3:
-    wh_n150: 31
+  e2e_tier1:
+    wh_n150: 10
     wh_llmbox_perf: 7
-  unit_tier3:
-    wh_n150: 24
+  unit_tier1:
+    wh_n150: 20
     wh_llmbox: 8
+  e2e_tier3:
+    wh_n150: 21
+  unit_tier3:
+    wh_n150: 4
   device_perf:
     wh_n300_civ2: 10
     bh_p150b_civ2: 10
