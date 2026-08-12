@@ -172,6 +172,10 @@ void py_device_module_types(nb::module_& m_device) {
             "frequency",
             &tt::tt_metal::experimental::ProgramRealtimeRecord::frequency,
             "Device clock frequency (cycles per ns)")
+        .def_ro(
+            "tensix_core_count",
+            &tt::tt_metal::experimental::ProgramRealtimeRecord::tensix_core_count,
+            "Number of distinct Tensix cores targeted by the program")
         .def_ro("chip_id", &tt::tt_metal::experimental::ProgramRealtimeRecord::chip_id, "Device chip ID")
         .def_prop_ro(
             "kernel_sources",

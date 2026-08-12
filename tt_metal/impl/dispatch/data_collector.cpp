@@ -137,20 +137,26 @@ void DataCollector::RecordProgramMetadata(ProgramImpl& program) {
     uint16_t runtime_id = static_cast<uint16_t>(program.get_runtime_id());
     uint64_t program_id = program.get_id();
     std::lock_guard<std::mutex> lock(kernel_source_mutex_);
-    auto [it, inserted] = program_id_to_kernel_sources_.try_emplace(program_id);
+    auto [it, inserted] = program_id_to_realtime_metadata_.try_emplace(program_id);
     if (inserted) {
-        auto& kernel_sources = it->second;
+        auto& metadata = it->second;
         const auto& hal = env_.get_hal();
+        const auto tensix_core_type_index = hal.get_programmable_core_type_index(HalProgrammableCoreType::TENSIX);
+        const auto logical_cores = program.logical_cores();
+        metadata.tensix_core_count =
+            tensix_core_type_index < logical_cores.size() ? logical_cores[tensix_core_type_index].size() : 0;
         for (uint32_t i = 0; i < hal.get_programmable_core_type_count(); i++) {
             for (const auto& [handle, kernel] : program.get_kernels(i)) {
                 // insert(const string&) allocates only on a miss; on a hit it just returns the
                 // existing node, so this allocation is only done once per unique source.
                 const std::string& stored_path = *unique_kernel_sources_.insert(kernel->kernel_source().source_).first;
-                kernel_sources.emplace_back(stored_path);
+                metadata.kernel_sources.emplace_back(stored_path);
             }
         }
     }
-    runtime_id_to_kernel_sources_[runtime_id].store(&it->second, std::memory_order_release);
+    // Publish one immutable object so source paths and placement remain correlated when a 16-bit runtime-ID
+    // slot is reused. The expensive logical-core derivation above runs only once per program ID.
+    runtime_id_to_realtime_metadata_[runtime_id].store(&it->second, std::memory_order_release);
 }
 
 void DataCollector::RecordProgramSubDevice(

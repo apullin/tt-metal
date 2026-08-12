@@ -381,7 +381,7 @@ def _write_run_manifest(
         )
         head = _git_head()
         manifest = {
-            "schema_version": 6,
+            "schema_version": 7,
             "profiler": "realtime_device_span" if overlap_qualification else "realtime",
             "variant": variant,
             "scenario": scenario,
@@ -751,6 +751,8 @@ def _profile_forward_device_span(mesh_device, run_fn, *, overlap_enabled: bool) 
             branch_by_chip[chip_id] = {
                 "topk_runtime_id": topk["runtime_id"],
                 "gather_runtime_id": gather["runtime_id"],
+                "topk_tensix_core_count": topk["tensix_core_count"],
+                "gather_tensix_core_count": gather["tensix_core_count"],
                 "topk_duration_ns": topk_ticks / frequency,
                 "gather_duration_ns": gather_ticks / frequency,
                 "intersection_ns": intersection_ticks / frequency,
@@ -786,6 +788,10 @@ def _profile_forward_device_span(mesh_device, run_fn, *, overlap_enabled: bool) 
         return max(values) if values else None
 
     critical_branch = {
+        "topk_tensix_core_count_min": min(item["topk_tensix_core_count"] for item in branch_by_chip.values()),
+        "topk_tensix_core_count_max": max(item["topk_tensix_core_count"] for item in branch_by_chip.values()),
+        "gather_tensix_core_count_min": min(item["gather_tensix_core_count"] for item in branch_by_chip.values()),
+        "gather_tensix_core_count_max": max(item["gather_tensix_core_count"] for item in branch_by_chip.values()),
         "topk_duration_ns": max(item["topk_duration_ns"] for item in branch_by_chip.values()),
         "gather_duration_ns": max(item["gather_duration_ns"] for item in branch_by_chip.values()),
         "serialized_sum_ns": max(item["serialized_sum_ns"] for item in branch_by_chip.values()),
@@ -849,7 +855,7 @@ def _overlap_scheduler_qualification(mla, kvpe_cache, num_links: int) -> dict:
         for candidate in (8, 4, 2, 1)
         if candidate <= preferred and num_links * 2 * (candidate + (1 if candidate > 1 else 0)) <= available
     )
-    active_cores = num_links * 2 * (selected + (1 if selected > 1 else 0))
+    scheduler_core_budget = num_links * 2 * (selected + (1 if selected > 1 else 0))
     return {
         "profile": resources.profile,
         "worker_grid": [
@@ -863,7 +869,9 @@ def _overlap_scheduler_qualification(mla, kvpe_cache, num_links: int) -> dict:
         "worst_case_output_bytes_per_link": per_link_bytes,
         "preferred_workers_per_direction": preferred,
         "selected_workers_per_direction": selected,
-        "active_gather_cores": active_cores,
+        # Capacity is intentionally conservative: it includes one mux for both directions even when a line
+        # endpoint has only one live neighbor. Actual instantiated cores come from the device profiler below.
+        "gather_scheduler_core_budget": scheduler_core_budget,
     }
 
 
@@ -1135,6 +1143,21 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
                 sum(manager_boundary_samples_ns) if is_cold else statistics.median(manager_boundary_samples_ns)
             )
 
+        observed_topk_tensix_core_counts = sorted(
+            {
+                chip["topk_tensix_core_count"]
+                for diagnostics in device_span_diagnostics
+                for chip in diagnostics["topk_gather_branch_by_chip"].values()
+            }
+        )
+        observed_gather_tensix_core_counts = sorted(
+            {
+                chip["gather_tensix_core_count"]
+                for diagnostics in device_span_diagnostics
+                for chip in diagnostics["topk_gather_branch_by_chip"].values()
+            }
+        )
+
         whole_forward_improvement = None
         if OVERLAP_ENABLED and OVERLAP_BASELINE_NS is not None:
             whole_forward_improvement = 1.0 - measured_ns / OVERLAP_BASELINE_NS
@@ -1175,6 +1198,8 @@ def test_mla_chunked_perf(mesh_device, variant, scenario, attn_mode, kv_cache_fo
                 "branch_gate_applied": OVERLAP_ENABLED and OVERLAP_BRANCH_BASELINE_NS is not None,
                 "manager_boundary_gap_samples_ns": manager_boundary_samples_ns,
                 "measured_manager_boundary_gap_ns": measured_manager_boundary_ns,
+                "observed_topk_tensix_core_counts": observed_topk_tensix_core_counts,
+                "observed_gather_tensix_core_counts": observed_gather_tensix_core_counts,
             }
         )
         logger.info(

@@ -65,11 +65,19 @@ public:
         SubDeviceId sub_device_id,
         uint32_t num_available_worker_cores = 0);
     std::optional<tt::ProgramSubDeviceInfo> GetProgramSubDevice(tt::ChipId device_id, uint64_t runtime_id) const;
+    struct ProgramRealtimeMetadata {
+        uint32_t tensix_core_count;
+        std::span<const std::string_view> kernel_sources;
+    };
+    ProgramRealtimeMetadata GetProgramRealtimeMetadataForRuntimeId(uint16_t runtime_id) const noexcept {
+        const auto* metadata = runtime_id_to_realtime_metadata_[runtime_id].load(std::memory_order_acquire);
+        return metadata != nullptr ? ProgramRealtimeMetadata{metadata->tensix_core_count, metadata->kernel_sources}
+                                   : ProgramRealtimeMetadata{0, {}};
+    }
     // Look up kernel source paths by runtime_id; empty span if the runtime_id is unknown.
     // The returned span is valid until MetalContext teardown or reinitialization.
     std::span<const std::string_view> GetKernelSourcesForRuntimeId(uint16_t runtime_id) const noexcept {
-        const auto* sources = runtime_id_to_kernel_sources_[runtime_id].load(std::memory_order_acquire);
-        return sources != nullptr ? std::span<const std::string_view>(*sources) : std::span<const std::string_view>{};
+        return GetProgramRealtimeMetadataForRuntimeId(runtime_id).kernel_sources;
     }
     // Register a callback to be invoked when real-time profiler data arrives.
     // Returns a handle that can be used to unregister the callback.
@@ -105,6 +113,10 @@ private:
         std::vector<KernelData> kernels;
         CoreRangeSet core_ranges;
     };
+    struct StoredProgramRealtimeMetadata {
+        std::vector<std::string_view> kernel_sources;
+        uint32_t tensix_core_count = 0;
+    };
 
     MetalEnvImpl& env_;
     std::map<uint64_t, std::vector<DispatchData>> program_id_to_dispatch_data;
@@ -114,8 +126,8 @@ private:
     // the real-time profiler receiver thread reads.
     mutable std::mutex kernel_source_mutex_;
     std::unordered_set<std::string> unique_kernel_sources_;
-    std::unordered_map<uint64_t, std::vector<std::string_view>> program_id_to_kernel_sources_;
-    std::array<std::atomic<const std::vector<std::string_view>*>, kRuntimeIdSlots> runtime_id_to_kernel_sources_{};
+    std::unordered_map<uint64_t, StoredProgramRealtimeMetadata> program_id_to_realtime_metadata_;
+    std::array<std::atomic<const StoredProgramRealtimeMetadata*>, kRuntimeIdSlots> runtime_id_to_realtime_metadata_{};
     std::map<std::pair<tt::ChipId, uint64_t>, tt::ProgramSubDeviceInfo> runtime_id_to_sub_device;
     mutable std::mutex runtime_id_to_sub_device_mutex_;
     mutable std::mutex program_realtime_profiler_callbacks_mutex_;

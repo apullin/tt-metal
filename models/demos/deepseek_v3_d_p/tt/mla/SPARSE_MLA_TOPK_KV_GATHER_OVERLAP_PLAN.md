@@ -77,12 +77,16 @@ Initially out of scope:
 
 5. The KVPE gather sets `input_batch_index`/`gathered_dim_size`, so it always
    takes the runtime-controlled direct schedule and disables fixed-shape
-   bank-owned selection. On Blackhole it starts at two workers/direction (12
-   cores for two links) and selects eight (36 cores) only when the worst-case
+   bank-owned selection. On Blackhole it starts at two workers/direction (a
+   12-core scheduler budget for two links) and selects eight (a 36-core budget)
+   only when the worst-case
    output allocation is at least 32 MB/link and the resolved input page is at
    least 2 KB. If eight is preferred, 40 cores admit 36 while a 30-core cap
    falls back to four workers/20 cores. Otherwise both ownership profiles may
-   use only 12 active cores. The threshold uses worst-case output allocation,
+   use only the 12-core budget. Actual instantiated cores are topology dependent:
+   a two-rank line endpoint creates eight worker plus two live-direction mux
+   cores (10 total), while the scheduler reserves mux capacity for both
+   directions. The threshold uses worst-case output allocation,
    not the growing active prefix, so the choice is stable after compilation but
    must be measured with the real GLM-5.2 KVPE format/shape before fixing the
    profile.
@@ -246,7 +250,7 @@ Required behavior:
 - Preserve the current row-major ordering, output shape/dtype, LLK K snapping,
   sentinel semantics, and cache-hit shape rebinding.
 - Add full-grid backward-compatibility tests plus non-origin, rectangular, and
-  discontiguous `CoreRangeSet` tests. Assert profiler-reported active cores stay
+  discontiguous `CoreRangeSet` tests. Assert profiler-reported instantiated cores stay
   inside the requested set and test cache separation between 120-, 110-, and
   80-core programs.
 - For non-origin/discontiguous sets, inspect the per-core `(start_row, rows)`
@@ -451,10 +455,12 @@ Extend `test_high_bw_all_gather.py` with tests independent of sparse MLA:
 9. **Fabric qualification:** repeat independent-progress and semaphore-reuse
    tests for the line/ring schedules used by Galaxy, LoudBox, and QB2. Confirm
    concurrent top-k DRAM traffic does not starve Fabric progress.
-10. **Scheduler budget:** assert the selected workers/direction tier from
-    unique reader/writer/mux cores in realtime-profiler records (and scheduler
-    host-unit tests) for 40- and 30-core restrictions instead of inferring it
-    from ownership counts.
+10. **Scheduler budget and actual footprint:** assert the selected
+    workers/direction tier and conservative capacity requirement in scheduler
+    host-unit tests. Independently record the program's distinct instantiated
+    Tensix cores from realtime-profiler metadata for 40- and 30-core
+    restrictions. Do not conflate owned cores, worst-case scheduler capacity,
+    and topology-dependent live mux placement.
 
 #### 40-core production and 30-core local-proxy tuning gate
 
@@ -467,11 +473,13 @@ Profile these warmed configurations at the real GLM-5.2 KVPE shape:
 The 30-core QB2 result is a functional/local proxy and must not override the
 80/40 production decision. For both BF16 and scaled-FP8 KVPE formats, record
 worst-case output bytes/link, resolved input page size, preferred
-workers/direction, fallback tier, and actual active core count. Expected cases
-are 8 workers/36 cores on a 40-core strip and 4 workers/20 cores after a 30-core
-fallback only when the real shape clears the high-parallelism predicates;
-otherwise the runtime-controlled path may use 2 workers/12 cores on either
-strip. If that wastes enough of the 40-core production ownership to lose
+workers/direction, fallback tier, scheduler core budget, and actual
+profiler-observed program footprint. Expected budgets are 8 workers/36 cores
+on a 40-core strip and 4 workers/20 cores after a 30-core fallback only when
+the real shape clears the high-parallelism predicates; otherwise the
+runtime-controlled path may use 2 workers with a 12-core budget on either
+strip. A line endpoint instantiates fewer muxes than that conservative budget.
+If that wastes enough of the 40-core production ownership to lose
 end-to-end performance, qualify a scheduler heuristic change separately rather
 than assuming an unmeasured worker tier.
 
@@ -764,7 +772,7 @@ a substitute.
 - [x] `high_bw_all_gather` external-semaphore interface and C++ factory path
 - [x] `high_bw_all_gather` interface, cache, reuse, validation, and independent-progress tests
 - [x] exact-hash warmup and cold-cache serialization coverage
-- [ ] 30-versus-40-core gather tier measurements
+- [x] QB2 isolated device-only 30-versus-40-core gather tier measurements
 - [x] split indexer score/select/finalize API with serial wrapper
 - [x] shared Galaxy/LoudBox 80/40 and QB2 80/30 sub-device managers with safe teardown
 - [x] sparse-MLA overlap integration and serial fallback
@@ -775,7 +783,7 @@ a substitute.
 - [x] concurrent lightweight-profiler record retention and raw device timestamps
 - [x] device-only top-k/gather intersection, union, and serialized-branch gate
 - [x] device-clock manager-boundary gaps per region and accumulated across cold chunks
-- [x] independent matched-mesh whole-forward net-win gate and schema-v6 manifest plumbing
+- [x] independent matched-mesh whole-forward net-win gate and schema-v7 manifest plumbing
 - [ ] passing cold/warm/long 80/40 net-win qualification on LoudBox and Galaxy
 - [ ] end-to-end GLM-5.2 LoudBox/Galaxy benchmark
 - [x] production qualification configuration/manifest recording the selected split and tier
@@ -841,9 +849,9 @@ the pair to model exception recovery. Validation covers paired/distinct
 handles, L1-small type, worker coverage, loaded sub-device membership, grid
 containment, undersized grids, and the implicit default full grid on QB2; the
 wrong-parent-mesh case runs when the line is a natural LoudBox/Galaxy submesh.
-The shared C++ scheduler test pins 40 cores to the eight-worker tier (36 active
-cores), 30 cores to the four-worker tier (20 active cores), admits the current
-two-worker GLM runtime schedule in either strip (12 active cores), and fails
+The shared C++ scheduler test pins 40 cores to the eight-worker tier (36-core
+budget), 30 cores to the four-worker tier (20-core budget), admits the current
+two-worker GLM runtime schedule in either strip (12-core budget), and fails
 closed below the four-core minimum. Together with the source-level external
 factory branch, which contains neither semaphore allocation nor
 `Synchronize`, the cache-miss allocator assertion and gather-scoped event are
@@ -876,9 +884,10 @@ and use a firmware/build whose instrumented fabric image fits.
 `test_sparse_mla_perf.py` now accepts `DS_PERF_OVERLAP_PROFILE` values
 `qb2_80_30`, `loudbox_80_40`, and `galaxy_80_40`. The named profile selects the
 matched SP x TP mesh, restricts qualification to GLM-5.2 sparse MLA, warms the
-exact hashes, and writes a schema-v6 manifest containing the worker grid,
+exact hashes, and writes a schema-v7 manifest containing the worker grid,
 80/30 or 80/40 ownership, KVPE page size, worst-case bytes/link, preferred and
-selected workers/direction, active gather cores, per-chip device spans,
+selected workers/direction, conservative gather scheduler budget,
+profiler-observed top-k/gather Tensix footprints, per-chip device spans,
 top-k/gather durations, intersection and overlap ratio, union versus serialized
 sum, device-clock manager-boundary gaps, timing samples, baselines, and both
 net-win decisions. `DS_PERF_OVERLAP_ENABLED=0` measures apples-to-apples serial
@@ -899,7 +908,7 @@ and do not claim to isolate Python API time. The older
 a diagnostic pattern but is not accepted as production latency evidence.
 
 The local BF16 smoke run resolved a 1152-byte KVPE page and selected two
-workers/direction (12 active gather cores) inside the 30-core ownership strip.
+workers/direction (12-core scheduler budget) inside the 30-core ownership strip.
 Earlier completion-event measurements are retained only as historical
 diagnostics and are not accepted as device-time performance evidence. The
 fixed realtime transport now emits both programs on every QB2 chip: top-k is
@@ -907,6 +916,22 @@ about 2.246 ms, gather is about 23.7--29.0 us, and the gather interval lies
 almost entirely inside top-k. This is the standalone op-test proxy tensor; it
 is not the full 128,000-token model gather measured below and its gather time
 must not be used to explain the end-to-end speedup.
+
+The exact QB2 Long-shape isolated tier qualification now measures both 30- and
+40-core right-edge gather ownership with raw device timestamps. It uses a
+129,280-row global prefix (128,000 cached plus the 1,280-token chunk), two SP
+ranks, two Fabric links, and seven warmed samples per tier. Both ownership
+sizes select two workers/direction, reserve 12 cores for topology-independent
+scheduling, and instantiate 10 cores on each endpoint of the two-rank line.
+
+| Cache format | 30-core median | 40-core median | 40 vs 30 | 30-core receive BW | 40-core receive BW |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BF16 row-major | 2.588 ms | 2.588 ms | +0.01% | 28.77 GB/s | 28.77 GB/s |
+| scaled FP8 row-major | 2.523 ms | 2.522 ms | +0.06% | 18.04 GB/s | 18.05 GB/s |
+
+This closes the local 30-versus-40 tuning question for the current runtime
+schedule: merely owning 10 more idle cores provides no material gather gain.
+It does not replace the required LoudBox/Galaxy 80/40 end-to-end qualification.
 
 The schema-v6 QB2 Long qualification used seven samples per mode at the
 128,000-token box-local prefix (the Galaxy 512,000-token per-chip proxy). It
@@ -993,7 +1018,8 @@ The focused operation review's changes are also incorporated:
 - no-sync/no-allocation, pair rebinding, repeated reuse, confinement, default-
   full-grid, and scheduler-tier tests use implementable observability;
 - KVPE runtime-control scheduling is gated on real worst-case bytes/link and
-  page size instead of assuming 36/20 active cores from ownership alone.
+  page size instead of assuming a 36/20 scheduler budget or actual footprint
+  from ownership alone.
 
 The implemented Phase 2 diff received a third Claude Opus review using the
 same required command/model. Its **APPROVE WITH CHANGES** findings were applied
@@ -1063,4 +1089,19 @@ minimum real per-chip union reduction ratio. Both Long pairs were rerun after
 that correction. A second Opus review returned **APPROVE**, explicitly
 confirming the device-only timing source, per-chip interval math, conservative
 collapse, independent gates, schema-v6 runbook fields, and updated result
+arithmetic.
+
+The schema-v7 core-footprint and 30-versus-40 tier phase was reviewed twice
+with `claude --dangerously-skip-permissions --model opus --effort low --print
+...`. The first verdict was **CHANGES REQUIRED** because the initial profiler
+metadata path rebuilt `ProgramImpl::logical_cores()` on every enqueue. The
+fix caches that derivation once per program ID and publishes core count plus
+kernel sources through one immutable metadata object, which also eliminates
+cross-field skew when a 16-bit runtime-ID slot is reused. The count remains
+32-bit, the merge-gate sanity test now verifies a strict two-core sub-grid,
+and broadcast-ring stress covers the new field. After the rebuild, profiler
+sanity suite, transport stress, exact Long gather tiers, and schema-v7 Long
+smokes passed. The second Opus review returned **APPROVE**, explicitly
+confirming the hot-path fix, lifetime/thread safety, sub-grid coverage,
+10-versus-12 reasoning, raw-device measurement, manifest fields, and plan
 arithmetic.

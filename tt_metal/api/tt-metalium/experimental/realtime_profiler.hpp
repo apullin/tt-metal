@@ -18,6 +18,7 @@ struct ProgramRealtimeRecord {
     uint64_t start_timestamp;                          // Device start timestamp (raw ticks)
     uint64_t end_timestamp;                            // Device end timestamp (raw ticks)
     double frequency;                                  // Device clock frequency (cycles per ns)
+    uint32_t tensix_core_count;                        // Distinct Tensix cores targeted by the program
     std::span<const std::string_view> kernel_sources;  // Kernel source paths; valid until
                                                        // MetalContext teardown or reinitialization.
 };

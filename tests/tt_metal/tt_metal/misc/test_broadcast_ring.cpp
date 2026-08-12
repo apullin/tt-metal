@@ -37,6 +37,7 @@ ProgramRealtimeRecord make_record(uint32_t runtime_id, std::span<const std::stri
         .start_timestamp = 100 + runtime_id,
         .end_timestamp = 200 + runtime_id,
         .frequency = 1.5,
+        .tensix_core_count = 42,
         .kernel_sources = sources,
     };
 }
@@ -116,6 +117,7 @@ TEST(BroadcastRing, RecordsBroadcastToAllReadersWithSpanFieldsIntact) {
             EXPECT_EQ(record->start_timestamp, 100 + record->runtime_id);
             EXPECT_EQ(record->end_timestamp, 200 + record->runtime_id);
             EXPECT_DOUBLE_EQ(record->frequency, 1.5);
+            EXPECT_EQ(record->tensix_core_count, 42u);
             ASSERT_EQ(record->kernel_sources.size(), 2u);
             EXPECT_EQ(record->kernel_sources[0], "kernel_a.cpp");
             EXPECT_EQ(record->kernel_sources[1], "kernel_b.cpp");
@@ -352,6 +354,7 @@ ProgramRealtimeRecord make_seq_record(uint32_t seq) {
         .start_timestamp = static_cast<uint64_t>(seq) * 7 + 3,
         .end_timestamp = static_cast<uint64_t>(seq) * 7 + 9,
         .frequency = 1.0 + static_cast<double>(seq) * 0.001,
+        .tensix_core_count = (seq % 110) + 1,
         .kernel_sources = {},
     };
 }
@@ -369,6 +372,8 @@ void verify_seq_records(const std::vector<ProgramRealtimeRecord>& received, uint
             << "torn/stale record: end_timestamp mismatch at seq " << seq;
         ASSERT_DOUBLE_EQ(r.frequency, 1.0 + static_cast<double>(seq) * 0.001)
             << "torn/stale record: frequency mismatch at seq " << seq;
+        ASSERT_EQ(r.tensix_core_count, (seq % 110) + 1)
+            << "torn/stale record: Tensix core count mismatch at seq " << seq;
         if (has_prev) {
             ASSERT_GT(seq, prev_seq) << "non-monotonic or duplicate delivery at seq " << seq;
         }
@@ -467,7 +472,7 @@ bool seq_record_ok(const ProgramRealtimeRecord& r) {
     const uint32_t seq = r.runtime_id - 1;
     return r.chip_id == (seq % 31) + 1 && r.start_timestamp == static_cast<uint64_t>(seq) * 7 + 3 &&
            r.end_timestamp == static_cast<uint64_t>(seq) * 7 + 9 &&
-           r.frequency == 1.0 + static_cast<double>(seq) * 0.001;
+           r.frequency == 1.0 + static_cast<double>(seq) * 0.001 && r.tensix_core_count == (seq % 110) + 1;
 }
 
 TEST(BroadcastRing, ConcurrentManyReadersMixedRates) {

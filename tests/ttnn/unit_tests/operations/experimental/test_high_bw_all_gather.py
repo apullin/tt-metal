@@ -199,14 +199,22 @@ def _fp8_payloads(tensor, mesh_device):
     return host_values.reshape(len(device_tensors), *local_shape)
 
 
-def _profile_high_bw_all_gather(mesh_device, run):
-    _, records = profile_realtime_program(mesh_device, run, collect_all=True, record_timeout_seconds=5.0)
+def _profile_high_bw_all_gather(mesh_device, run, *, expected_tensix_core_count=None):
+    _, records = profile_realtime_program(
+        mesh_device,
+        run,
+        collect_all=True,
+        drain_before_run=True,
+        record_timeout_seconds=5.0,
+    )
     programs = {}
     for record in records:
         sources = [source.replace("\\", "/") for source in record["kernel_sources"]]
         if not any("/experimental/high_bw_all_gather/" in source for source in sources):
             continue
         assert any(source.endswith("/unicast_writer.cpp") for source in sources)
+        if expected_tensix_core_count is not None:
+            assert record["tensix_core_count"] == expected_tensix_core_count
         runtime_id = record["runtime_id"]
         programs[runtime_id] = max(programs.get(runtime_id, 0.0), record["duration_ns"])
     assert programs, "realtime profiler returned no high_bw_all_gather program"
@@ -928,6 +936,200 @@ def _sparse_mla_overlap_grids(mesh_device):
     assert topk_grid.num_cores() == 80
     assert gather_grid.num_cores() == (30 if grid.x == 11 else 40)
     return topk_grid, gather_grid
+
+
+def _right_strip_subdevice_manager(mesh_device, owned_cores):
+    """Build an isolated gather strip of exactly ``owned_cores`` on each chip.
+
+    QB2 cannot own an 80-core top-k strip and a 40-core gather strip at once, but it can still measure
+    the production gather ownership in isolation. Keeping the strip at the same right edge as sparse MLA
+    preserves its logical/physical placement while the left strip absorbs the otherwise unused cores.
+    """
+    grid = mesh_device.compute_with_storage_grid_size()
+    assert grid.y > 0 and owned_cores % grid.y == 0
+    owned_columns = owned_cores // grid.y
+    assert 0 < owned_columns < grid.x
+    gather_start_x = grid.x - owned_columns
+    compute_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(gather_start_x - 1, grid.y - 1))]
+    )
+    gather_grid = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(gather_start_x, 0), ttnn.CoreCoord(grid.x - 1, grid.y - 1))]
+    )
+    assert gather_grid.num_cores() == owned_cores
+    manager = mesh_device.create_sub_device_manager(
+        [ttnn.SubDevice([compute_grid]), ttnn.SubDevice([gather_grid])],
+        0,
+    )
+    return manager, ttnn.SubDeviceId(1), gather_grid
+
+
+def _profile_sparse_mla_gather_tier(
+    mesh_device,
+    device_input,
+    persistent_output,
+    *,
+    cluster_axis,
+    gathered_dim_size,
+    owned_cores,
+    expected_program_tensix_cores,
+    samples,
+):
+    manager, gather_subdevice_id, gather_grid = _right_strip_subdevice_manager(mesh_device, owned_cores)
+    semaphore_pair = _make_l1_small_semaphore_pair(mesh_device, gather_grid)
+    ttnn.synchronize_device(mesh_device)
+    mesh_device.load_sub_device_manager(manager)
+
+    def run():
+        return ttnn.experimental.high_bw_all_gather(
+            device_input,
+            dim=2,
+            output_tensor=persistent_output,
+            cluster_axis=cluster_axis,
+            subdevice_id=gather_subdevice_id,
+            sub_core_grids=gather_grid,
+            num_links=_NUM_LINKS,
+            input_batch_index=0,
+            gathered_dim_size=gathered_dim_size,
+            ready_semaphore=semaphore_pair[0],
+            data_valid_semaphore=semaphore_pair[1],
+        )
+
+    try:
+        # Warm both the miss and hit path before collecting device timestamps.
+        run()
+        ttnn.synchronize_device(mesh_device, sub_device_ids=[gather_subdevice_id])
+        run()
+        ttnn.synchronize_device(mesh_device, sub_device_ids=[gather_subdevice_id])
+        durations_ns = [
+            _profile_high_bw_all_gather(
+                mesh_device,
+                run,
+                expected_tensix_core_count=expected_program_tensix_cores,
+            )
+            for _ in range(samples)
+        ]
+    finally:
+        ttnn.synchronize_device(mesh_device)
+        mesh_device.clear_loaded_sub_device_manager()
+        mesh_device.remove_sub_device_manager(manager)
+    return durations_ns
+
+
+@run_for_blackhole("sparse MLA gather-tier qualification requires Blackhole fabric")
+@pytest.mark.timeout(0)
+@pytest.mark.skipif(os.environ.get("CI") == "true", reason="local production-shape performance qualification")
+@pytest.mark.parametrize("device_params", [_FABRIC_2D_LINE_DEVICE_PARAMS], indirect=True)
+@pytest.mark.parametrize(
+    "case_name,dtype,width,expected_page_size",
+    [
+        ("kv_bf16", ttnn.bfloat16, 576, 1152),
+        ("kv_scaled_fp8", ttnn.fp8_e4m3, 656, 704),
+    ],
+    ids=["kv_bf16", "kv_scaled_fp8"],
+)
+def test_high_bw_all_gather_sparse_mla_30_vs_40_core_device_perf(
+    mesh_device, case_name, dtype, width, expected_page_size
+):
+    """Compare 30- and 40-core ownership at the exact QB2 Long sparse-KV gather shape.
+
+    This is an isolated gather comparison, not an 80/40 overlap claim: QB2 owns only 110 Tensix cores.
+    The production operation has runtime prefix controls, so both row formats currently select two
+    workers/direction even when the enclosing strip owns 40 cores. The scheduler reserves 12 cores so the
+    same program also fits an interior/ring rank with two live directions. Each endpoint in this two-rank
+    line actually instantiates 8 worker and 2 mux cores, which the profiler verifies directly. Raw device
+    program timestamps determine every reported duration; host dispatch/synchronization time is excluded.
+    """
+    rank_line, cluster_axis = _rank_line_mesh(mesh_device)
+    rank_pair_shape = ttnn.MeshShape(2, 1) if cluster_axis == 0 else ttnn.MeshShape(1, 2)
+    rank_pair = rank_line.create_submesh(rank_pair_shape)
+    grid = rank_pair.compute_with_storage_grid_size()
+    if (grid.x, grid.y) != (11, 10):
+        pytest.skip(f"30-vs-40 QB2 qualification requires an 11x10 worker grid, got {grid}")
+
+    # QB2 Long mirrors Galaxy's per-chip 512k prefix: SP=2 owns a 128k box-local cache and adds the
+    # current 1280-token chunk, so each of the two ranks contributes 64,640 rows.
+    global_rows = 128_000 + 1_280
+    assert global_rows % 2 == 0
+    global_shape = (1, 1, global_rows, width)
+    host_zeros = torch.zeros(global_shape, dtype=torch.bfloat16)
+    input_mesh_dims = (2, None) if cluster_axis == 0 else (None, 2)
+    device_input = _make_tensor(
+        rank_pair,
+        host_zeros,
+        dtype,
+        ttnn.ROW_MAJOR_LAYOUT,
+        ttnn.ShardTensor2dMesh(rank_pair, dims=input_mesh_dims, mesh_shape=tuple(rank_pair.shape)),
+    )
+    persistent_output = _make_tensor(
+        rank_pair,
+        host_zeros,
+        dtype,
+        ttnn.ROW_MAJOR_LAYOUT,
+        ttnn.ReplicateTensorToMesh(rank_pair),
+    )
+    del host_zeros
+
+    input_shard = ttnn.get_device_tensors(device_input)[0]
+    output_shard = ttnn.get_device_tensors(persistent_output)[0]
+    page_size = input_shard.buffer_aligned_page_size()
+    assert page_size == expected_page_size
+    output_bytes_per_link = output_shard.buffer_num_pages() * output_shard.buffer_aligned_page_size() // _NUM_LINKS
+    preferred_workers_per_direction = 8 if output_bytes_per_link >= 32_000_000 and page_size >= 2048 else 2
+    assert preferred_workers_per_direction == 2
+
+    tier_results = {}
+    try:
+        for owned_cores in (30, 40):
+            selected_workers_per_direction = next(
+                workers
+                for workers in (8, 4, 2, 1)
+                if workers <= preferred_workers_per_direction
+                and _NUM_LINKS * 2 * (workers + (1 if workers > 1 else 0)) <= owned_cores
+            )
+            scheduler_core_budget = (
+                _NUM_LINKS * 2 * (selected_workers_per_direction + (1 if selected_workers_per_direction > 1 else 0))
+            )
+            # The scheduler budgets a mux for both directions. On a two-rank line each endpoint has one live
+            # direction, so its program instantiates one mux/link plus workers for both direction slots.
+            expected_program_tensix_cores = _NUM_LINKS * (2 * selected_workers_per_direction + 1)
+            assert selected_workers_per_direction == 2
+            assert scheduler_core_budget == 12
+            assert expected_program_tensix_cores == 10
+            durations_ns = _profile_sparse_mla_gather_tier(
+                rank_pair,
+                device_input,
+                persistent_output,
+                cluster_axis=cluster_axis,
+                gathered_dim_size=global_rows,
+                owned_cores=owned_cores,
+                expected_program_tensix_cores=expected_program_tensix_cores,
+                samples=7,
+            )
+            median_ns = statistics.median(durations_ns)
+            received_bytes_per_rank = (global_rows // 2) * page_size
+            tier_results[owned_cores] = {
+                "samples_ns": durations_ns,
+                "median_ns": median_ns,
+                "effective_receive_gbps": received_bytes_per_rank / median_ns,
+                "owned_cores": owned_cores,
+                "selected_workers_per_direction": selected_workers_per_direction,
+                "scheduler_core_budget": scheduler_core_budget,
+                "measured_program_tensix_cores": expected_program_tensix_cores,
+            }
+    finally:
+        ttnn.deallocate(persistent_output)
+        ttnn.deallocate(device_input)
+        gc.collect()
+
+    relative_40_vs_30 = 1.0 - tier_results[40]["median_ns"] / tier_results[30]["median_ns"]
+    print(
+        "SPARSE_MLA_GATHER_TIER_DEVICE_TIME "
+        f"case={case_name} global_rows={global_rows} page_size={page_size}B "
+        f"output_bytes_per_link={output_bytes_per_link} preferred_workers_per_direction="
+        f"{preferred_workers_per_direction} results={tier_results} "
+        f"relative_40_vs_30={relative_40_vs_30:.2%}"
+    )
 
 
 @run_for_blackhole("high_bw_all_gather external semaphores require Blackhole fabric")

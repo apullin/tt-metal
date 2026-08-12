@@ -4,7 +4,7 @@
 
 // Merge-gate sanity check for the real-time (RT) profiler on Wormhole and
 // Blackhole single-chip configurations. Enqueues a handful of compute
-// programs back-to-back on all tensix cores, attaches an RT profiler
+// programs back-to-back on a strict Tensix sub-grid, attaches an RT profiler
 // callback, and asserts that each program produces a record with a
 // plausible start/end timestamp. The goal is to catch coarse regressions
 // in the RT profiler pipeline (mailbox layout, D2H socket init, sync
@@ -89,12 +89,12 @@ std::string make_sanity_kernel_source(uint32_t runtime_id) {
            "}\n";
 }
 
-// Runs a single compute program on all tensix cores on `mesh_device`,
+// Runs a single compute program on `program_cores` on `mesh_device`,
 // tagged with `runtime_id`, so the RT profiler pipeline emits a record
 // carrying that runtime_id (records with runtime_id == 0 are filtered
 // out by the host-side receiver).
 void enqueue_sanity_program(
-    const std::shared_ptr<distributed::MeshDevice>& mesh_device, uint32_t runtime_id, const CoreRange& all_cores) {
+    const std::shared_ptr<distributed::MeshDevice>& mesh_device, uint32_t runtime_id, const CoreRange& program_cores) {
     Program program = CreateProgram();
 
     const std::string kernel_src = make_sanity_kernel_source(runtime_id);
@@ -102,14 +102,14 @@ void enqueue_sanity_program(
     CreateKernelFromString(
         program,
         kernel_src,
-        all_cores,
+        program_cores,
         DataMovementConfig{.processor = DataMovementProcessor::RISCV_0, .noc = NOC::RISCV_0_default});
     CreateKernelFromString(
         program,
         kernel_src,
-        all_cores,
+        program_cores,
         DataMovementConfig{.processor = DataMovementProcessor::RISCV_1, .noc = NOC::RISCV_1_default});
-    CreateKernelFromString(program, kernel_src, all_cores, ComputeConfig{});
+    CreateKernelFromString(program, kernel_src, program_cores, ComputeConfig{});
 
     program.set_runtime_id(static_cast<uint64_t>(runtime_id));
 
@@ -150,10 +150,13 @@ TEST(RealtimeProfilerSanity, FiveProgramsBackToBack) {
 
     CoreCoord compute_grid = mesh_device->compute_with_storage_grid_size();
     CoreRange all_cores(CoreCoord{0, 0}, CoreCoord{compute_grid.x - 1, compute_grid.y - 1});
+    ASSERT_GT(all_cores.size(), 2u);
+    CoreRange program_cores(CoreCoord{0, 0}, CoreCoord{1, 0});
+    ASSERT_LT(program_cores.size(), all_cores.size());
     for (uint32_t i = 0; i < kNumPrograms; ++i) {
         // Runtime IDs start at 1 so every program emits a record (runtime_id == 0
         // is reserved for infrastructure traffic and filtered host-side).
-        enqueue_sanity_program(mesh_device, /*runtime_id=*/i + 1, all_cores);
+        enqueue_sanity_program(mesh_device, /*runtime_id=*/i + 1, program_cores);
     }
 
     mesh_device->quiesce_devices();
@@ -192,6 +195,8 @@ TEST(RealtimeProfilerSanity, FiveProgramsBackToBack) {
         if (rec.runtime_id < 1 || rec.runtime_id > kNumPrograms) {
             continue;
         }
+        EXPECT_EQ(rec.tensix_core_count, program_cores.size())
+            << "RT record carried the wrong Tensix program footprint for runtime_id=" << rec.runtime_id;
         ASSERT_FALSE(rec.kernel_sources.empty())
             << "RT record for runtime_id=" << rec.runtime_id << " carried no kernel sources";
         const std::string expected_marker = kSourceMarkerPrefix + std::to_string(rec.runtime_id);
@@ -409,6 +414,8 @@ TEST(RealtimeProfilerSanity, TraceReplayResolvesKernelSources) {
             continue;
         }
         ++trace_records;
+        EXPECT_EQ(rec.tensix_core_count, all_cores.size())
+            << "Trace-replayed record carried the wrong Tensix program footprint";
         ASSERT_FALSE(rec.kernel_sources.empty())
             << "Trace-replayed record (runtime_id=" << kTraceRuntimeId
             << ") carried no kernel sources; its runtime_id was not tied during trace capture";

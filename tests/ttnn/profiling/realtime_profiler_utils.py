@@ -56,6 +56,7 @@ def profile_realtime_program(
                         "start_timestamp": start_timestamp,
                         "end_timestamp": end_timestamp,
                         "frequency": frequency,
+                        "tensix_core_count": int(record.tensix_core_count),
                         "duration_ns": (end_timestamp - start_timestamp) / frequency,
                         "kernel_sources": tuple(str(source) for source in record.kernel_sources),
                     }
