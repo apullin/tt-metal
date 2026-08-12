@@ -117,6 +117,7 @@ ttnn:
   device_perf:
     wh_n300_civ2: 10
     bh_p150b_civ2: 10
+    wh_n150: 10
   integration:
     wh_llmbox: 30
     wh_galaxy: 290
