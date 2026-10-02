@@ -7,6 +7,7 @@
 #include "paged_update_cache_device_operation.hpp"
 #include "paged_update_cache_device_operation_types.hpp"
 
+#include <cstdlib>
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/program_descriptors.hpp>
@@ -170,7 +171,8 @@ ProgramDescriptor PagedUpdateCacheProgramFactory::create_descriptor(
 
     uint32_t num_cache_tiles = 2 * Wt;   // double buffered
     uint32_t num_interm_tiles = 2 * Wt;  // double buffered
-    uint32_t num_output_tiles = B * Wt;
+    const bool compact_output_cb = std::getenv("TTNN_PAGED_UPDATE_CACHE_COMPACT_OUTPUT_CB") != nullptr;
+    uint32_t num_output_tiles = compact_output_cb ? Wt : B * Wt;
 
     const tt::CBIndex src0_cb_index = CBIndex::c_0;
     const tt::CBIndex src1_cb_index = CBIndex::c_1;
