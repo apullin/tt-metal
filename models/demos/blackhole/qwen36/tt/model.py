@@ -187,6 +187,13 @@ class Qwen36Model:
         # post-final-norm hidden of every prompt row in self.prefill_hidden.
         self._keep_prefill_hidden = False
         self.prefill_hidden = None
+        # Speculative decoding (DFlash2): layer indices whose residual-stream output (fractured
+        # [1,1,bucket,dim/tp]) the TP masked-bucket prefill leaves in self.prefill_taps, in this order.
+        self._keep_prefill_taps = ()
+        self.prefill_taps = None
+        # tt/spec/host_embedding.py: when set, the token embedding table lives on the host and the TP
+        # masked-bucket prefill embeds there (the device table is freed).
+        self.host_embedding = None
 
         # Optional vision tower (DropInVisionTransformer), attached lazily by
         # init_vision_model() for the multimodal serving path. None on the text-only path.
@@ -2035,16 +2042,20 @@ class Qwen36Model:
         flex_sdpa=True: flexible chunked SDPA (serving). flex_sdpa=False: host-int path (debug).
         Fills K/V for real blocks only. Returns hidden [1,1,bucket,dim]."""
         block_size = get_block_size(self._paged_kv_caches)
-        tok = ttnn.from_torch(
-            token_buf.to(torch.int32),
-            dtype=ttnn.uint32,
-            device=self.device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(self.device),
-        )
-        x = self.embd(tok)
-        x = ttnn.reshape(x, (1, 1, bucket, x.shape[-1]))
-        x = ttnn.to_memory_config(x, ttnn.DRAM_MEMORY_CONFIG)
-        ttnn.deallocate(tok)
+        if self.host_embedding is not None:
+            # Speculative decoding memory enabler (tt/spec/host_embedding.py): same rows, host lookup.
+            x = self.host_embedding.device(token_buf.reshape(-1))
+        else:
+            tok = ttnn.from_torch(
+                token_buf.to(torch.int32),
+                dtype=ttnn.uint32,
+                device=self.device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(self.device),
+            )
+            x = self.embd(tok)
+            x = ttnn.reshape(x, (1, 1, bucket, x.shape[-1]))
+            x = ttnn.to_memory_config(x, ttnn.DRAM_MEMORY_CONFIG)
+            ttnn.deallocate(tok)
         # Trace-safe vision splice (fixed-shape where over the hidden-sharded persistent buffers,
         # sliced to bucket; identity when the mask is zero). The caller stages the buffers
         # (prefill_masked_bucket -> _set_vision_merge). No-op until a trace is captured.
@@ -2081,7 +2092,8 @@ class Qwen36Model:
             if flex_sdpa
             else None
         )
-        for layer in self.layers:
+        taps = {}
+        for i, layer in enumerate(self.layers):
             if layer.is_full_attention:
                 x_new = layer.forward(
                     x,
@@ -2096,8 +2108,16 @@ class Qwen36Model:
                 )
             else:
                 x_new = layer.forward(x, mode="prefill", chunk_size=self.args.gdn_chunk_size, valid_len=valid_len)
-            ttnn.deallocate(x)
+            if i - 1 not in taps:
+                ttnn.deallocate(x)
             x = x_new
+            if i in self._keep_prefill_taps:
+                taps[i] = x
+        if self._keep_prefill_taps:
+            # Caller takes ownership; the returned hidden is a copy when the last layer is a tap.
+            self.prefill_taps = [taps[i] for i in self._keep_prefill_taps]
+            if len(self.layers) - 1 in taps:
+                x = ttnn.clone(x)
         # Deallocate per-chunk inputs; only hidden survives (avoids OOM in eager 64k loop).
         ttnn.deallocate(cos)
         ttnn.deallocate(sin)

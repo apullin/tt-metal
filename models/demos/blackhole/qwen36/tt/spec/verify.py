@@ -57,18 +57,25 @@ class TargetVerifier:
                 state.free()
         self.gdn_states = None
 
-    def forward(self, tokens, cos, sin, cur_pos, page_table, kv_update_idxs):
-        """tokens [rows, 1] uint32; cos/sin [1, rows, 1, rope_dim]; cur_pos [rows] int32 (t..t+rows-1);
-        page_table [rows, blocks] (every row = the sequence's row); kv_update_idxs: `rows` int32 [rows]
-        tensors, tensor i holding t+i at row i and -1 elsewhere.
+    def forward(self, tokens, cos, sin, cur_pos, page_table, kv_update_idxs, tap_layers=()):
+        """tokens [rows, 1] uint32, or with the host embedding table (tt/spec/host_embedding.py) the
+        embedded rows [1, 1, rows, dim/devices] bf16 (left intact); cos/sin [1, rows, 1, rope_dim];
+        cur_pos [rows] int32 (t..t+rows-1); page_table [rows, blocks] (every row = the sequence's row);
+        kv_update_idxs: `rows` int32 [rows] tensors, tensor i holding t+i at row i and -1 elsewhere.
 
         Returns (vocab-sharded logits [1, 1, rows, vocab/devices], post-final-norm hidden
-        [1, 1, rows, dim] replicated)."""
+        [1, 1, rows, dim] replicated), plus, when tap_layers is given, the list of residual-stream
+        outputs of those layers (fractured [1, 1, rows, dim/devices], in tap_layers order)."""
         model = self.model
-        x = model.embd(tokens)
-        x = ttnn.reshape(x, (1, 1, x.shape[0] * x.shape[1], x.shape[-1]))
+        embedded = model.host_embedding is not None
+        if embedded:
+            x = tokens
+        else:
+            x = model.embd(tokens)
+            x = ttnn.reshape(x, (1, 1, x.shape[0] * x.shape[1], x.shape[-1]))
         assert x.shape[-2] == self.rows
-        for layer, state in zip(model.layers, self.gdn_states):
+        taps = {}
+        for i, (layer, state) in enumerate(zip(model.layers, self.gdn_states)):
             if layer.is_full_attention:
                 attention = layer.attention
 
@@ -85,11 +92,17 @@ class TargetVerifier:
                     return gdn_decode_rows(dn, a, state)
 
             x_new = decode_layer(layer, x, attention_fn)
-            ttnn.deallocate(x)
+            if i - 1 not in tap_layers and not (i == 0 and embedded):
+                ttnn.deallocate(x)
             x = x_new
+            if i in tap_layers:
+                taps[i] = x
         hidden = model._final_norm_decode(x)
-        ttnn.deallocate(x)
+        if model.args.n_layers - 1 not in tap_layers:
+            ttnn.deallocate(x)
         logits = ttnn.linear(hidden, model.lm_head_weight)
+        if tap_layers:
+            return logits, hidden, [taps[i] for i in tap_layers]
         return logits, hidden
 
     def rollback(self, row):
