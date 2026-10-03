@@ -152,6 +152,10 @@ class TPAttention:
         self.paged_k = None
         self.paged_v = None
         self.use_paged = False
+        # Speculative verify (tt/spec): per-call list of update-index tensors. When set, the paged KV
+        # write runs once per tensor (rows not being written carry -1) instead of once with cur_pos, so
+        # rows of one sequence whose positions share a cache tile never race in one paged_update_cache.
+        self.kv_update_idxs = None
 
     def set_paged_kv_cache(self, k_cache, v_cache):
         """Attach an externally-allocated paged KV cache (one call after allocate_kv_caches)."""
@@ -580,8 +584,9 @@ class TPAttention:
             ttnn.deallocate(k_p)
             ttnn.deallocate(v_p)
             # paged_update_cache takes bf16/fp32 and casts to bf8 cache; decode K/V stay bf16 (prefill fill needs bf8)
-            ttnn.experimental.paged_update_cache(keys, k_sh, update_idxs_tensor=cur_pos_tt, page_table=page_table)
-            ttnn.experimental.paged_update_cache(values, v_sh, update_idxs_tensor=cur_pos_tt, page_table=page_table)
+            for update_idxs in self.kv_update_idxs or (cur_pos_tt,):
+                ttnn.experimental.paged_update_cache(keys, k_sh, update_idxs_tensor=update_idxs, page_table=page_table)
+                ttnn.experimental.paged_update_cache(values, v_sh, update_idxs_tensor=update_idxs, page_table=page_table)
             ttnn.deallocate(k_sh)
             ttnn.deallocate(v_sh)
             attn_out = ttnn.transformer.paged_scaled_dot_product_attention_decode(

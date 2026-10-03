@@ -183,6 +183,10 @@ class Qwen36Model:
         # addresses are baked into the chunk-prefill trace and reused by every prefill_paged_slots
         # replay, so it is never freed/reallocated (only zeroed in place). See _bind_gdn_prefill_scratch.
         self._gdn_prefill_scratch = None
+        # Speculative decoding (tt/spec): when True, the TP masked-bucket prefill also leaves the
+        # post-final-norm hidden of every prompt row in self.prefill_hidden.
+        self._keep_prefill_hidden = False
+        self.prefill_hidden = None
 
         # Optional vision tower (DropInVisionTransformer), attached lazily by
         # init_vision_model() for the multimodal serving path. None on the text-only path.
@@ -2163,7 +2167,12 @@ class Qwen36Model:
         ttnn.synchronize_device(self.device)
 
         if self.num_devices > 1:
-            return self._masked_bucket_logits_tp(hidden, actual_len, bucket)
+            logits = self._masked_bucket_logits_tp(hidden, actual_len, bucket)
+            if self._keep_prefill_hidden:
+                # Speculative decoding (tt/spec): the post-final-norm hidden of every bucket row
+                # [1,1,bucket,dim], replicated, for the drafter's prompt pass. Caller takes ownership.
+                self.prefill_hidden = self.norm(hidden, mode=Mode.PREFILL)
+            return logits
 
         # One-hot matmul for last row (fixed program per bucket; slice would recompile per length).
         sel = torch.zeros(1, 1, bucket, dtype=torch.float32)
