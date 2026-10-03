@@ -150,11 +150,13 @@ class MTPHead:
         ttnn.deallocate(cat)
         return x
 
-    def decode(self, tokens, hidden, cos, sin, cur_pos, page_table, kv_update_idxs):
+    def decode(self, tokens, hidden, cos, sin, cur_pos, page_table, kv_update_idxs, return_hidden=False):
         """MTP rows at positions cur_pos (traceable; same input conventions as TargetVerifier.forward).
 
-        tokens [rows, 1]: x_{i+1} per row; hidden [1, 1, rows, dim]: the target's post-norm h_i.
-        Returns vocab-sharded logits [1, 1, rows, vocab/devices]."""
+        tokens [rows, 1]: x_{i+1} per row; hidden [1, 1, rows, dim]: the target's post-norm h_i, or
+        for a chained draft the MTP's own output hidden. Returns vocab-sharded logits
+        [1, 1, rows, vocab/devices], and with return_hidden also the MTP's output hidden after
+        `mtp.norm` [1, 1, rows, dim] (what the LM head reads; the next chained draft's input)."""
         model = self.model
         e = model.embd(tokens)
         e = ttnn.reshape(e, (1, 1, e.shape[0] * e.shape[1], e.shape[-1]))
@@ -175,17 +177,20 @@ class MTPHead:
         y_n = self.norm(y, mode=Mode.DECODE, norm_config=nc)
         ttnn.deallocate(y)
         logits = ttnn.linear(y_n, model.lm_head_weight)
+        if return_hidden:
+            return logits, y_n
         ttnn.deallocate(y_n)
         return logits
 
-    def prefill(self, next_tokens, hidden, valid_len, page_table):
+    def prefill(self, next_tokens, hidden, valid_len, page_table, return_hidden=False):
         """MTP prompt pass at positions 0..valid_len-1 (eager, one masked bucket).
 
         next_tokens [1, valid_len] torch: x_1..x_T (the prompt shifted by one, ending with the
         target's first generated token); hidden [1, 1, bucket, dim]: the target's post-norm hidden
         of every prompt row (Qwen36Model.prefill_hidden); page_table [1, blocks] torch.
         Fills the MTP KV for positions < valid_len and returns replicated logits [1, 1, vocab] for
-        the last row (the draft for position valid_len + 1)."""
+        the last row (the draft for position valid_len + 1), and with return_hidden also that row's
+        output hidden after `mtp.norm` [1, 1, 1, dim] (the first chained draft's input)."""
         model = self.model
         mesh = self.mesh
         rep = ttnn.ReplicateTensorToMesh(mesh)
@@ -244,5 +249,8 @@ class MTPHead:
         y_n = self.norm(y_last, mode=Mode.PREFILL)
         ttnn.deallocate(y_last)
         logits = model._lm_head(y_n)
+        logits = ttnn.reshape(logits, (1, 1, logits.shape[-1]))
+        if return_hidden:
+            return logits, y_n
         ttnn.deallocate(y_n)
-        return ttnn.reshape(logits, (1, 1, logits.shape[-1]))
+        return logits
