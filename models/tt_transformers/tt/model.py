@@ -803,12 +803,19 @@ class Transformer(LightweightModule):
             if not is_log_probs:
                 tt_out = ttnn.reshape(tt_out, ttnn.Shape([1, 1, padded_batch_size, 1]))
             return self.concat_host_output(tt_out, is_log_probs)[0, 0, :B, 0]
-        if self.args.num_devices > 1:
-            tt_out = ttnn.to_torch(ttnn.get_device_tensors(tt_out)[0]).float()
+        if self.args.num_devices == 1:
+            tt_out = ttnn.to_torch(tt_out)
+        elif self._decode_logits_gathered():
+            tt_out = ttnn.to_torch(ttnn.get_device_tensors(tt_out)[0])
         else:
-            tt_out = ttnn.to_torch(tt_out).float()
-        tt_out = tt_out[:, :, :B, : self.vocab_size].view(B, S, -1)
+            # Each device returns its own vocab shard (see ttnn_decode_forward).
+            tt_out = torch.cat([ttnn.to_torch(shard) for shard in ttnn.get_device_tensors(tt_out)], dim=-1)
+        tt_out = tt_out[:, :, :B, : self.vocab_size].float().view(B, S, -1)
         return tt_out
+
+    def _decode_logits_gathered(self):
+        """Whether host-sampled decode logits are all-gathered on device (Galaxy, prefetcher) or left per-device."""
+        return self.args.is_galaxy or self.prefetcher is not None
 
     def ttnn_prefill_forward(
         self,
@@ -1032,33 +1039,40 @@ class Transformer(LightweightModule):
             self._increment_decode_positions_device(current_pos, rot_mat_idxs)
             return tt_logits
 
-        # Gather the output across all devices and untilize the tensor (for argmax)
-        if self.args.num_devices > 1:
-            cluster_axis = 0 if self.args.is_galaxy else None
-            num_links = 2 if self.args.is_galaxy else 1
-            tt_logits = ttnn.experimental.all_gather_async(
+        if self._decode_logits_gathered():
+            # Gather the output across all devices and untilize the tensor (for argmax)
+            if self.args.num_devices > 1:
+                cluster_axis = 0 if self.args.is_galaxy else None
+                num_links = 2 if self.args.is_galaxy else 1
+                tt_logits = ttnn.experimental.all_gather_async(
+                    tt_logits,
+                    persistent_output_buffer=None,
+                    dim=3,
+                    multi_device_global_semaphore=self.tt_ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
+                    num_links=num_links,
+                    memory_config=tt_logits.memory_config() if self.prefetcher is None else ttnn.DRAM_MEMORY_CONFIG,
+                    cluster_axis=cluster_axis,
+                    topology=self.args.ccl_topology(),
+                    barrier_semaphore=self.tt_ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
+                    chunks_per_sync=10,
+                    num_workers_per_link=2,
+                    num_buffers_per_channel=2,
+                    subdevice_id=self.prefetcher.worker_sub_device_id if self.prefetcher is not None else None,
+                )
+            tt_logits = ttnn.untilize(
                 tt_logits,
-                persistent_output_buffer=None,
-                dim=3,
-                multi_device_global_semaphore=self.tt_ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
-                num_links=num_links,
-                memory_config=tt_logits.memory_config() if self.prefetcher is None else ttnn.DRAM_MEMORY_CONFIG,
-                cluster_axis=cluster_axis,
-                topology=self.args.ccl_topology(),
-                barrier_semaphore=self.tt_ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
-                chunks_per_sync=10,
-                num_workers_per_link=2,
-                num_buffers_per_channel=2,
-                subdevice_id=self.prefetcher.worker_sub_device_id if self.prefetcher is not None else None,
+                use_multicore=True,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                sub_core_grids=self.prefetcher.all_worker_cores_range_set if self.prefetcher is not None else None,
             )
+            return tt_logits, None
 
-        tt_logits = ttnn.untilize(
-            tt_logits,
-            use_multicore=True,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            sub_core_grids=self.prefetcher.all_worker_cores_range_set if self.prefetcher is not None else None,
-        )
-
+        # The host reads these logits back every step, so keep only the real user rows of the
+        # tile-padded batch and each device's own vocab shard; process_output_decode concatenates the
+        # shards. Gathering all 32 rows and reading every device's full copy cost ~9.6 ms per step
+        # for a 202K vocab on N300, against ~1.3 ms this way.
+        tt_logits = ttnn.slice(tt_logits, (0, 0, 0, 0), (1, 1, self.args.max_batch_size, tt_logits.shape[-1]))
+        tt_logits = ttnn.untilize(tt_logits, use_multicore=True, memory_config=ttnn.DRAM_MEMORY_CONFIG)
         return tt_logits, None
 
     def switch_mode(self, mode: Mode):
