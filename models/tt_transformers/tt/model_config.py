@@ -51,6 +51,7 @@ from models.tt_transformers.tt.load_checkpoints import (
     standardize_hf_keys,
     standardize_hf_keys_multimodal,
 )
+from models.tt_transformers.tt import muse_glimmer
 from models.tt_transformers.tt.prefetcher import Prefetcher
 
 # file names for performance and accuracy mode override files
@@ -2875,6 +2876,23 @@ class ModelArgs:
             self.force_text_only = True
             self.is_multimodal = False
 
+        # Muse Glimmer (text decoder of MuseGlimmerForConditionalGeneration): Gemma-3-style sandwich
+        # norms, RoPE only on the sliding-window layers and NoPE on the full-attention ones (EXAONE's
+        # pattern, unscaled), a sigmoid output gate on the attention (the `wg` weight), weightless QK
+        # norms with Q scaled by qk_scale_factor, separate post-norm eps, and a scaled + softcapped
+        # output. Weight-side ops are folded at load (tt/muse_glimmer.py).
+        if self.model_type == "muse_glimmer":
+            nope = [theta == 0 for theta in self.layer_rope_theta]
+            assert nope == [kind == "full_attention" for kind in self.layer_types], (
+                "Muse Glimmer: NoPE layers (layer_rope_theta == 0) must be exactly the full-attention layers"
+            )
+            assert all(theta in (0, self.rope_theta) for theta in self.layer_rope_theta), (
+                "Muse Glimmer: every RoPE layer must use rope_theta"
+            )
+            self.use_global_nope = True
+            self.force_text_only = True
+            self.is_multimodal = False
+
     def _set_params_from_dict(self, config):
         eos_token_id = config.get("eos_token_id", None)
         self.image_token_index = config.get("image_token_index", None)
@@ -3040,6 +3058,14 @@ class ModelArgs:
         # final-logit cap is consumed, via Transformer._apply_final_logit_softcapping.
         self.final_logit_softcapping = text_config.get("final_logit_softcapping", None)
 
+        # Muse Glimmer fields; None for every other model. Q is scaled by qk_scale_factor after its norm
+        # (folded into the SDPA scale), the post-attention/post-MLP norms use post_norm_eps, and logits
+        # are scaled by output_multiplier before the softcap. layer_rope_theta is 0 on NoPE layers.
+        self.qk_scale_factor = text_config.get("qk_scale_factor", None)
+        self.post_norm_eps = text_config.get("post_norm_eps", None)
+        self.output_multiplier = text_config.get("output_multiplier", None)
+        self.layer_rope_theta = text_config.get("layer_rope_theta", None)
+
         # Configurable MLP activation type
         self.mlp_activation_type = self._get_hidden_activation_type(text_config)
 
@@ -3152,21 +3178,28 @@ class ModelArgs:
             vision_config.update({k: v for k, v in base_config.items() if k not in ["text_config", "vision_config"]})
             return vision_config
 
-        from transformers import AutoConfig
+        from transformers import AutoConfig, PretrainedConfig
 
         if self.dummy_weights:
             logger.info(f"Loading state param for dummy {self.model_name} from {self.LOCAL_HF_PARAMS[self.model_name]}")
             self.hf_config = AutoConfig.from_pretrained(
                 self.LOCAL_HF_PARAMS[self.model_name], trust_remote_code=self.trust_remote_code_hf
             )
+            config = self.hf_config.to_dict()
         else:
-            self.hf_config = AutoConfig.from_pretrained(
-                self.CKPT_DIR,
-                trust_remote_code=self.trust_remote_code_hf,
-                local_files_only=os.getenv("CI") == "true",
-            )
-
-        config = self.hf_config.to_dict()
+            local_files_only = os.getenv("CI") == "true"
+            try:
+                self.hf_config = AutoConfig.from_pretrained(
+                    self.CKPT_DIR, trust_remote_code=self.trust_remote_code_hf, local_files_only=local_files_only
+                )
+                config = self.hf_config.to_dict()
+            except ValueError:
+                # Architectures newer than the installed transformers (Muse Glimmer) have no config
+                # class here; their config.json is read as a plain dict instead.
+                config, _ = PretrainedConfig.get_config_dict(self.CKPT_DIR, local_files_only=local_files_only)
+                if config.get("model_type") != "muse_glimmer":
+                    raise
+                self.hf_config = PretrainedConfig.from_dict(config)
 
         if "text_config" in config or "vision_config" in config:
             merged_text_config = merge_text_config(config)
@@ -3512,6 +3545,9 @@ class ModelArgs:
 
             # model.load_state_dict({k: torch.randn_like(v) for k, v in model.state_dict().items()})
             state_dict = model.state_dict()
+        elif self.model_type == "muse_glimmer":
+            # transformers has no Muse Glimmer model here; HF-keyed weights come from its GGUF.
+            state_dict = muse_glimmer.load_state_dict(self)
         else:
             # Always HuggingFace since we only support HF_MODEL now
             model_cls = self.get_hf_model_cls()
@@ -3563,6 +3599,8 @@ class ModelArgs:
             else:
                 # Standard: convert to Meta format
                 state_dict = convert_hf_to_meta(state_dict, self.head_dim, self.n_heads, self.n_kv_heads)
+            if self.model_type == "muse_glimmer":
+                state_dict = muse_glimmer.fold_into_meta_state_dict(state_dict, self)
 
         keys_dict = list(state_dict.keys())[:]
         remv = [f"layers.{i}." for i in list(range(self.n_layers, self.full_model_n_layers))]

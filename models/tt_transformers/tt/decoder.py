@@ -147,11 +147,15 @@ class TransformerBlock(LightweightModule):
             TG=args.is_galaxy,
             ag_config_key="ATTN_LN_AG_CONFIG",
         )
+        # Sandwich decoders (Gemma-3, Muse Glimmer) apply ffn_norm to the attention output. Muse Glimmer's
+        # post-attention and post-MLP norms use their own eps.
+        sandwich = f"layers.{layer_num}.pre_feedforward_layernorm.weight" in state_dict
+        post_norm_eps = getattr(args, "post_norm_eps", None) or args.norm_eps
         self.ff_norm = DistributedNorm(
             RMSNorm(
                 device=mesh_device,
                 dim=args.dim,
-                eps=args.norm_eps,
+                eps=post_norm_eps if sandwich else args.norm_eps,
                 state_dict=state_dict,
                 state_dict_prefix=args.get_state_dict_prefix("", layer_num),
                 weight_cache_path=None if args.dummy_weights else weight_cache_path,
@@ -169,7 +173,7 @@ class TransformerBlock(LightweightModule):
             TG=args.is_galaxy,
             ag_config_key="FFN_LN_AG_CONFIG",
         )
-        if f"layers.{layer_num}.pre_feedforward_layernorm.weight" in state_dict:
+        if sandwich:
             self.pre_ff_norm = DistributedNorm(  # pre_feedforward_layernorm
                 RMSNorm(
                     device=mesh_device,
@@ -217,7 +221,7 @@ class TransformerBlock(LightweightModule):
                 RMSNorm(
                     device=mesh_device,
                     dim=args.dim,
-                    eps=args.norm_eps,
+                    eps=post_norm_eps,
                     add_unit_offset=self.args.rms_norm_add_unit_offset,
                     state_dict=state_dict,
                     state_dict_prefix=args.get_state_dict_prefix("", layer_num),

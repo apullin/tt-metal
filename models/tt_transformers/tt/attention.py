@@ -294,6 +294,38 @@ class Attention(LightweightModule):
             cache_file_name=cache_name("wqkv_sharded_2d"),
         )
 
+        # Sigmoid output gate (Muse Glimmer): the concatenated heads are scaled by sigmoid(x @ wg) before
+        # wo. wg splits over devices like wq, so each device gates the channels of its own heads.
+        wg_key = f"{layer_name}.wg.weight"
+        self.wg = None
+        if wg_key in state_dict:
+            assert not self.TG and prefetcher is None, "the attention output gate is not wired for Galaxy or the prefetcher"
+            gate_width = self.n_local_heads * self.head_dim
+            pt_wg = torch.cat(
+                [torch.chunk(state_dict[wg_key], self.num_devices, dim=0)[i].T for i in range(self.num_devices)],
+                dim=-1,
+            )
+            self.wg = ttnn.as_tensor(
+                pt_wg.unsqueeze(0).unsqueeze(0),
+                dtype=self.wqkv_dtype,
+                layout=ttnn.TILE_LAYOUT,
+                device=self.mesh_device,
+                memory_config=configuration.create_dram_sharded_mem_config(configuration.dim, gate_width),
+                mesh_mapper=ttnn.ShardTensor2dMesh(self.mesh_device, dims=(2, 3), mesh_shape=configuration.cluster_shape),
+                cache_file_name=cache_name("wg_sharded_2d"),
+            )
+            # Decode: DRAM-sharded matmul on the QKV matmul's input grid, with the sigmoid fused.
+            self.wg_decode_program_config = configuration.dram_matmul_config(
+                m=configuration.tile_padded_batch_rows,
+                k=configuration.dim,
+                n=gate_width,
+                num_cores=configuration.attn_input_grid.num_cores,
+                fused_activation=ttnn.UnaryOpType.SIGMOID,
+                num_workers_per_dram_bank=configuration.get_dram_sharded_matmul_num_workers(
+                    TensorGroup.WQKV, gate_width
+                ),
+            )
+
         def norm_reshard(x, norm, mode, norm_config):
             """Hack until RMSNorm supports height-sharded output config"""
             if mode == Mode.DECODE:
@@ -393,6 +425,9 @@ class Attention(LightweightModule):
             self.scale = configuration.query_pre_attn_scalar**-0.5
         else:
             self.scale = self.head_dim**-0.5
+        # Muse Glimmer scales Q by qk_scale_factor after its norm; s * (q . k) folds that into the scale.
+        if getattr(configuration, "qk_scale_factor", None) is not None:
+            self.scale *= configuration.qk_scale_factor
 
         # Insert the tensors into the prefetcher only in decode mode, we do not use prefetcher in prefill mode
         if self.prefetcher is not None:
@@ -760,6 +795,15 @@ class Attention(LightweightModule):
             # WARNING: must not change the batch size between compiling and executing a trace
             num_tiles = int(math.ceil(xqkv_fused_sharded.shape[-2] / self.tile_size))
             xqkv_fused_sharded = xqkv_fused_sharded + self.wqkv_bias_decode[num_tiles - 1]
+        if self.wg is not None:
+            gate = ttnn.linear(
+                x,
+                self.wg,
+                memory_config=ttnn.L1_WIDTH_SHARDED_MEMORY_CONFIG,
+                program_config=self.wg_decode_program_config,
+                compute_kernel_config=self.li_qkv_decode_compute_kernel_cfg,
+                dtype=ttnn.bfloat16,
+            )
 
         ttnn.deallocate(x)
         qkv_all_reduce_mem_cfg = self.args.get_attn_qkv_all_reduce_output_mem_config(
@@ -897,6 +941,8 @@ class Attention(LightweightModule):
         )
         ttnn.deallocate(attn_output_11BH)
         ttnn.deallocate(attn_output_1G4D)
+        if self.wg is not None:
+            attn_output_cat = self._apply_output_gate(attn_output_cat, gate)
 
         if self.use_fused_all_gather_matmul or self.prefetcher is not None:
             attn_output_cat = ttnn.to_memory_config(
@@ -1074,6 +1120,34 @@ class Attention(LightweightModule):
                 compute_kernel_config=self.li_qkv_prefill_compute_kernel_cfg,
                 program_config=self.args.get_attn_qkv_program_config(Mode.PREFILL, seq_len, None),
             )
+        if self.wg is not None:
+            if self.args.use_minimal_qkv_prefill_matmul(seq_len):
+                gate = ttnn.experimental.minimal_matmul(
+                    x_11SH,
+                    self.wg,
+                    compute_kernel_config=self.li_qkv_prefill_compute_kernel_cfg,
+                    config=self.args.get_attn_qkv_program_config(Mode.PREFILL, seq_len, None),
+                )
+            else:
+                # The DRAM-sharded weight needs an explicit config; same shape of config as the QKV matmul's.
+                gate = ttnn.linear(
+                    x_11SH,
+                    self.wg,
+                    compute_kernel_config=self.li_qkv_prefill_compute_kernel_cfg,
+                    memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                    program_config=self.args.matmul_config(
+                        m=seq_len,
+                        k=self.hidden_size,
+                        n=self.n_local_heads * self.head_dim,
+                        grid_size=(self.grid_size.x, self.grid_size.y),
+                        in0_block_w=1,
+                        fuse_batch=True,
+                    ),
+                )
+            gate = ttnn.reshape(gate, [1, 1, seq_len, -1]) if seq_len > self.MAX_QKV_MM_SEQ_LEN else gate
+            if original_seq_len != seq_len:
+                gate = gate[:, :, :original_seq_len, :]
+            gate = ttnn.sigmoid(gate, memory_config=ttnn.DRAM_MEMORY_CONFIG)
 
         # FIXME: surely ttnn.linear bias should work?
         if self.wqkv_bias_prefill is not None:
@@ -1285,6 +1359,8 @@ class Attention(LightweightModule):
         # nlp_concat_heads outputs [B, 1, S_per_user, H*D], reshape to [1, 1, B*S, H*D]
         if batch_size > 1:
             attn_output_11SH = ttnn.reshape(attn_output_11SH, [1, 1, seq_len, -1])
+        if self.wg is not None:
+            attn_output_11SH = self._apply_output_gate(attn_output_11SH, gate)
 
         # reshaping long sequence to matmul fit on device
         if seq_len > 1024:
@@ -1333,6 +1409,22 @@ class Attention(LightweightModule):
             )
 
         return output_11SH
+
+    def _apply_output_gate(self, attn_output, gate):
+        """attn_output * gate for the concatenated heads, in attn_output's shape and memory layout."""
+        if gate.memory_config() != attn_output.memory_config() or gate.shape != attn_output.shape:
+            gate_interleaved = ttnn.to_memory_config(gate, ttnn.L1_MEMORY_CONFIG) if gate.is_sharded() else gate
+            if gate_interleaved.shape != attn_output.shape:
+                gate_interleaved = ttnn.reshape(gate_interleaved, attn_output.shape, attn_output.padded_shape)
+            gate_matched = ttnn.to_memory_config(gate_interleaved, attn_output.memory_config())
+            if gate_interleaved is not gate:
+                ttnn.deallocate(gate_interleaved)
+            ttnn.deallocate(gate)
+            gate = gate_matched
+        gated = ttnn.multiply(attn_output, gate, memory_config=attn_output.memory_config())
+        ttnn.deallocate(attn_output)
+        ttnn.deallocate(gate)
+        return gated
 
     def forward(
         self,
