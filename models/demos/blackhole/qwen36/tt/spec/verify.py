@@ -6,8 +6,9 @@
   own cur_pos (t+i), so paged SDPA-decode row i sees exactly positions <= t+i. The KV writes run as
   one paged_update_cache per row (`TPAttention.kv_update_idxs`; other rows carry -1), because rows
   whose positions share a cache tile race inside a single call.
-- GDN layers: batched projections, row-by-row conv + recurrence on the single state, with the
-  state after every row but the last kept in snapshot buffers (`gdn_rows`), for rollback.
+- GDN layers: everything but the recurrence runs batched over the rows; the recurrence runs row by
+  row on the single state, with the state after every row but the last kept for rollback
+  (`gdn_rows`).
 - Norms, MLP and the LM head run over the rows as one tile, as in plain decode.
 
 All inputs are device tensors and nothing is allocated persistently, so the step is traceable.
