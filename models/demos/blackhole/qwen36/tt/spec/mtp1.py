@@ -175,9 +175,18 @@ class MTP1Decoder:
         self._restore_gdn_host(gdn_snap)
         ttnn.synchronize_device(mesh)
         logger.info(f"[MTP1] compile{' + trace capture' if use_trace else ''}: {time.time() - t_c:.1f}s")
+        # DRAM headroom with every speculative buffer (and trace) in place.
+        view = ttnn.get_memory_view(mesh, ttnn.BufferType.DRAM)
+        dram = {
+            "num_banks": view.num_banks,
+            "total_bytes_per_bank": view.total_bytes_per_bank,
+            "free_bytes_per_bank": view.total_bytes_free_per_bank,
+            "largest_contiguous_free_per_bank": view.largest_contiguous_bytes_free_per_bank,
+        }
+        logger.info(f"[MTP1] DRAM per device: {dram}")
 
         drafts = accepted = 0
-        step_times, step_tokens = [], []
+        step_times, step_tokens, verify_times = [], [], []
         cur = y
         while len(generated) < max_new_tokens:
             t_step = time.time()
@@ -191,6 +200,7 @@ class MTP1Decoder:
             if not use_trace:
                 ttnn.deallocate(v_idx)
                 ttnn.deallocate(v_val)
+            verify_times.append(time.time() - t_step)  # inputs + verify + readback
             drafts += 1
             ok = y0 == draft
             if ok:
@@ -233,5 +243,9 @@ class MTP1Decoder:
             "steps": len(step_times),
             "decode_tok_s": steady_n / steady_t if steady_t > 0 else 0.0,
             "step_ms_mean": 1000 * steady_t / max(1, len(step_times) - 1),
+            # Split of the steady step: verify (inputs, trace, argmax readback) vs the rest
+            # (rollback on reject, MTP tokens, MTP trace, readback).
+            "verify_ms_mean": 1000 * sum(verify_times[1:]) / max(1, len(verify_times) - 1),
+            "dram": dram,
         }
         return generated, stats
