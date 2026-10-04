@@ -2544,15 +2544,23 @@ class Qwen36Model:
         logits = None
         for c in range(num_full):
             cs = c * chunk
-            if self.host_embedding is not None:
-                tok = self.host_embedding.device(token_ids[0, cs : cs + chunk])
-            else:
-                tok = dev(token_ids[:, cs : cs + chunk].to(torch.int32), ttnn.uint32)
-            cos_t, sin_t = self._rope_tp_cos_sin_torch(cs, chunk)
-            cos, sin = dev(cos_t, ttnn.bfloat16, ttnn.TILE_LAYOUT), dev(sin_t, ttnn.bfloat16, ttnn.TILE_LAYOUT)
-            csi = dev(torch.tensor([cs], dtype=torch.int32), ttnn.int32)
+            # Host sources stay referenced until the chunk's sync (their uploads may still be in flight).
             blk0 = cs // block_size
-            cpt = dev(page_table[:, blk0 : blk0 + chunk // block_size].contiguous(), ttnn.int32)
+            cos_t, sin_t = self._rope_tp_cos_sin_torch(cs, chunk)
+            host = [
+                token_ids[:, cs : cs + chunk].to(torch.int32),
+                cos_t,
+                sin_t,
+                torch.tensor([cs], dtype=torch.int32),
+                page_table[:, blk0 : blk0 + chunk // block_size].contiguous(),
+            ]
+            if self.host_embedding is not None:
+                tok = self.host_embedding.device(host[0].reshape(-1))
+            else:
+                tok = dev(host[0], ttnn.uint32)
+            cos, sin = dev(host[1], ttnn.bfloat16, ttnn.TILE_LAYOUT), dev(host[2], ttnn.bfloat16, ttnn.TILE_LAYOUT)
+            csi = dev(host[3], ttnn.int32)
+            cpt = dev(host[4], ttnn.int32)
             out = self._forward_prefill_chunk_tp(tok, cos, sin, csi, full_pt, cpt)
             for t in (tok, cos, sin, csi, cpt):
                 ttnn.deallocate(t)
@@ -2562,12 +2570,17 @@ class Qwen36Model:
                 logits = self._masked_bucket_logits_tp(out, chunk, chunk)
                 ttnn.deallocate(out)
                 self.prefill_hidden, self.prefill_taps = hidden, taps
+                ttnn.synchronize_device(self.device)
                 break
             ttnn.deallocate(out)
             if on_chunk is not None:
                 on_chunk(cs, chunk, hidden, taps)
             for t in ([hidden] if hidden is not None else []) + list(taps or ()):
                 ttnn.deallocate(t)
+            ttnn.synchronize_device(self.device)
+            del host
+            if (c + 1) % 32 == 0:
+                logger.info(f"[TP chunked collect] {c + 1}/{num_full} chunks")
         ttnn.deallocate(full_pt)
         if tail == 0:
             return logits, (num_full - 1) * chunk, chunk
