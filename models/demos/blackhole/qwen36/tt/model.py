@@ -1333,8 +1333,7 @@ class Qwen36Model:
                 ttnn.deallocate(cs)
             if dn.conv_carry is not None:
                 ttnn.deallocate(dn.conv_carry)
-            if dn._zero_conv0 is not None:
-                ttnn.deallocate(dn._zero_conv0)
+            # (dn._zero_conv0 is a zero source shared by every layer, owned by args; not freed here.)
             # Rebind the batched decode buffers.
             dn.B = B_b
             dn.rec_state = rec_b

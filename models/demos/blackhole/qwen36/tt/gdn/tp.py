@@ -259,11 +259,22 @@ class TPGatedDeltaNet:
             )
         else:
             self.rec_state = z((self.B, self.Nv, self.Dk, self.Dv))
-        # Cross-chunk conv carry + persistent zero sources (created before any trace)
+        # Cross-chunk conv carry + persistent zero sources (created before any trace). The zero
+        # sources are read-only copy sources with the same shapes in every layer, so all layers share
+        # one set (kept on the shared args; ~1.4 MB instead of ~67 MB per device for 48 layers).
         self.conv_carry = z((1, self.K - 1, self.qkv_dim_tp))
-        self._zero_conv0 = z((1, self.B, self.qkv_dim_tp))
-        self._zero_conv_carry = z((1, self.K - 1, self.qkv_dim_tp))
-        self._zero_rec = z((self.B, self.Nv, self.Dk, self.Dv))
+        zeros = getattr(self.args, "_gdn_zero_sources", None)
+        if zeros is None:
+            zeros = self.args._gdn_zero_sources = {}
+
+        def shared_zero(shape):
+            if shape not in zeros:
+                zeros[shape] = z(shape)
+            return zeros[shape]
+
+        self._zero_conv0 = shared_zero((1, self.B, self.qkv_dim_tp))
+        self._zero_conv_carry = shared_zero((1, self.K - 1, self.qkv_dim_tp))
+        self._zero_rec = shared_zero((self.B, self.Nv, self.Dk, self.Dv))
         # Chunk-outer batched-prefill conv left-context (allocated lazily by forward_prefill_batched).
         if getattr(self, "_batched_conv_carry", None) is not None:
             ttnn.deallocate(self._batched_conv_carry)

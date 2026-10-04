@@ -155,6 +155,9 @@ class TPAttention:
         # Speculative verify (tt/spec): per-call list of update-index tensors. When set, the paged KV
         # write runs once per tensor (rows not being written carry -1) instead of once with cur_pos, so
         # rows of one sequence whose positions share a cache tile never race in one paged_update_cache.
+        # The paged SDPA then also runs once per row: its KV split across cores is cores / batch, so a
+        # B-row call reduces each row in a different order than a B=1 decode step does once the context
+        # spans more K chunks than a row's share of cores (verify logits then drift from plain decode).
         self.kv_update_idxs = None
 
     def set_paged_kv_cache(self, k_cache, v_cache):
@@ -589,18 +592,44 @@ class TPAttention:
                 ttnn.experimental.paged_update_cache(values, v_sh, update_idxs_tensor=update_idxs, page_table=page_table)
             ttnn.deallocate(k_sh)
             ttnn.deallocate(v_sh)
-            attn_out = ttnn.transformer.paged_scaled_dot_product_attention_decode(
-                q,
-                keys,
-                values,
-                page_table_tensor=page_table,
-                cur_pos_tensor=cur_pos_tt,
-                scale=self.scale,
-                program_config=sdpa_dec_cfg,
-                # Emit to L1: consumed by the L1 sigmoid-gate multiply next (output-only, doesn't
-                # change the SDPA reduction), before the wo matmul + all-reduce re-materialize to DRAM.
-                memory_config=_L1,
-            )
+            if self.kv_update_idxs is not None and B > 1:
+                # Rows of one sequence (speculative verify): one B=1 SDPA per row, the same core split
+                # and reduction order as plain decode.
+                rows = []
+                for r in range(B):
+                    q_r = ttnn.slice(q, (0, r, 0, 0), (1, r + 1, NH, HD), memory_config=q.memory_config())
+                    pt_r = ttnn.slice(page_table, (r, 0), (r + 1, page_table.shape[-1]))
+                    pos_r = ttnn.slice(cur_pos_tt, (r,), (r + 1,))
+                    rows.append(
+                        ttnn.transformer.paged_scaled_dot_product_attention_decode(
+                            q_r,
+                            keys,
+                            values,
+                            page_table_tensor=pt_r,
+                            cur_pos_tensor=pos_r,
+                            scale=self.scale,
+                            program_config=sdpa_dec_cfg,
+                            memory_config=_L1,
+                        )
+                    )
+                    for t in (q_r, pt_r, pos_r):
+                        ttnn.deallocate(t)
+                attn_out = ttnn.concat(rows, dim=1, memory_config=_L1)
+                for t in rows:
+                    ttnn.deallocate(t)
+            else:
+                attn_out = ttnn.transformer.paged_scaled_dot_product_attention_decode(
+                    q,
+                    keys,
+                    values,
+                    page_table_tensor=page_table,
+                    cur_pos_tensor=cur_pos_tt,
+                    scale=self.scale,
+                    program_config=sdpa_dec_cfg,
+                    # Emit to L1: consumed by the L1 sigmoid-gate multiply next (output-only, doesn't
+                    # change the SDPA reduction), before the wo matmul + all-reduce re-materialize to DRAM.
+                    memory_config=_L1,
+                )
             ttnn.deallocate(q)
         else:
             # Internal per-head KV caches; pad NKV head dim to 32 for tile-aligned update
