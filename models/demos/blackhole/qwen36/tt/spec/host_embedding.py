@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
 # SPDX-License-Identifier: Apache-2.0
-"""Opt-in: move the target's token embedding table to the host (speculative decoding memory enabler).
+"""Opt-in: move the target's token embedding table to the host (memory enabler for long windows).
 
 The TP embedding table is vocab x dim/tp bf16 per device (248320 x 2560 x 2 B = 1.21 GiB on each
-N300 ASIC). Every speculative caller already knows its tokens on the host, so the lookup moves there
-and only the [rows, dim/tp] result crosses PCIe. The host table is read back from the device table,
-so the embeddings are bit-identical to the device lookup.
+N300 ASIC). Every caller knows its tokens on the host, so the lookup moves there and only the
+[rows, dim/tp] result crosses PCIe. The host table is read back from the device table, so the
+embeddings are bit-identical to the device lookup.
 
-After `enable_host_embedding(model)` the device table is freed: `model.embd` raises if any
-device-side lookup is attempted, the TP masked-bucket prefill embeds on the host
-(`Qwen36Model.host_embedding`), and the speculative verify and drafter take pre-embedded rows.
+After `enable_host_embedding(model)` the device table is freed and `model.embd` raises if any
+device-side lookup is attempted. Every TP path of Qwen36Model takes embedded rows instead
+(`Qwen36Model.host_embedding`): the masked-bucket prefill, the chunk-prefill trace and decode
+(`prepare_decode_inputs_host` returns the embedded rows), so the plain `_run_tp_generation`, the
+MTP head and the speculative verify and drafter all run unchanged on top of it. Call it before the
+chunk-prefill trace is captured (`_run_tp_generation` captures per call).
 """
 import torch
 

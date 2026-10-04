@@ -59,7 +59,10 @@ def _host_u32(values):
 class MTPDecoder:
     """Greedy MTP-k speculative decoding: k chained MTP drafts and one (k+1)-row verify per step."""
 
-    def __init__(self, model, mtp, k=1):
+    def __init__(self, model, mtp, k=1, host_embedding=False):
+        """host_embedding=True moves the target's token embedding table to the host first
+        (tt/spec/host_embedding.py; frees 1.21 GiB per N300 ASIC; irreversible for this model object,
+        whose plain `_run_tp_generation` then embeds on the host too)."""
         assert k >= 1
         self.model = model
         self.mtp = mtp
@@ -68,10 +71,19 @@ class MTPDecoder:
         self.mesh = model.mesh_device
         self.vocab = model.args.vocab_size
         self.per_shard = self.vocab // model.num_devices
+        if host_embedding:
+            from models.demos.blackhole.qwen36.tt.spec.host_embedding import enable_host_embedding
+
+            enable_host_embedding(model)
+
+    def _tokens_host(self, tokens):
+        """MTP token inputs [R, 1] uint32, or their embedded rows with the host embedding table."""
+        emb = self.model.host_embedding
+        return emb.host(tokens) if emb is not None else _host_u32(tokens)
 
     # ---- host <-> device input staging ---------------------------------------------------------
     def _rows_inputs_host(self, tokens, pos):
-        """(tokens [R,1], cur_pos [R] = pos..pos+R-1, rope, kv update idxs per row) host tensors."""
+        """(tokens [R,1] or their embedded rows, cur_pos [R] = pos..pos+R-1, rope, kv update idxs per row) host tensors."""
         R = len(tokens)
         tok_tt, pos_tt, rope_tt, _ = self.model.prepare_decode_inputs_host(
             torch.tensor([[t] for t in tokens], dtype=torch.int32), torch.arange(pos, pos + R, dtype=torch.int32)
@@ -103,7 +115,7 @@ class MTPDecoder:
 
     # ---- generation ----------------------------------------------------------------------------
     def generate(self, token_ids, max_new_tokens, num_blocks, block_size=64, use_trace=True, draft_override=None):
-        """Greedy-generate max_new_tokens tokens after token_ids [1, T] (T <= one prefill chunk).
+        """Greedy-generate max_new_tokens tokens after token_ids [1, T] (any T that fits the KV).
 
         draft_override(index, slot, draft) -> draft (tests only): replaces the slot-th draft of a
         step (slot 0..k-1), which proposes generated token `index`, e.g. to force accepts or rejects.
@@ -113,13 +125,14 @@ class MTPDecoder:
         num_blocks = ((num_blocks + 31) // 32) * 32
         kv_cache_shape = [num_blocks, model.args.n_local_kv_heads, block_size, model.args.head_dim]
         model.allocate_kv_caches(kv_cache_shape, ttnn.bfloat16, batch_size=1)
-        mtp.allocate_kv_cache(kv_cache_shape)
         verifier = TargetVerifier(model, self.rows)
-        verifier.allocate()
-        self._gdn = [layer.attention for layer in model.layers if not layer.is_full_attention]
-        page_table = torch.arange(num_blocks, dtype=torch.int32).reshape(1, num_blocks)
         trace_ids = []
-        try:
+        try:  # everything allocated from here on is freed on the way out, also when an allocation fails
+            # The MTP layer's KV in the target's KV dtype (bfloat8_b under QWEN_SDPA_BF8=1).
+            mtp.allocate_kv_cache(kv_cache_shape, dtype=model._paged_kv_caches[0][0].dtype)
+            verifier.allocate()
+            self._gdn = [layer.attention for layer in model.layers if not layer.is_full_attention]
+            page_table = torch.arange(num_blocks, dtype=torch.int32).reshape(1, num_blocks)
             return self._generate(token_ids, T, max_new_tokens, page_table, verifier, use_trace, draft_override, trace_ids)
         finally:
             for tid in trace_ids:
@@ -133,11 +146,17 @@ class MTPDecoder:
         k, R, vocab, per_shard = self.k, self.rows, self.vocab, self.per_shard
         chained = k > 1
 
-        # Prefill: the target's own masked-bucket path, keeping every row's post-norm hidden.
+        # Prefill: the target's own chunked path (prefill_chunked_collect) keeping every row's
+        # post-norm hidden. The MTP prompt pass, rows (h_i, x_{i+1}) at positions 0..T-1, follows
+        # chunk by chunk; the last row's draft is the one for x_{T+1}.
         t0 = time.time()
+
+        def mtp_chunk(cs, n, hidden, _taps):
+            mtp.prefill(token_ids[:, cs + 1 : cs + n + 1], hidden, n, page_table, chunk_start=cs, want_logits=False)
+
         model._keep_prefill_hidden = True
         try:
-            logits_dev = model.prefill_traced_chunked(token_ids[:, :T], page_table, actual_len=T)
+            logits_dev, last_cs, last_n = model.prefill_chunked_collect(token_ids[:, :T], page_table, T, on_chunk=mtp_chunk)
         finally:
             model._keep_prefill_hidden = False
         hidden_all, model.prefill_hidden = model.prefill_hidden, None
@@ -146,15 +165,13 @@ class MTPDecoder:
         generated = [y]
         ttft = time.time() - t0
 
-        # MTP prompt pass: rows (h_i, x_{i+1}) at positions 0..T-1 -> draft for x_{T+1}.
-        next_tokens = torch.cat([token_ids[:, 1:T].to(torch.int32), torch.tensor([[y]], dtype=torch.int32)], dim=1)
-        if chained:
-            mtp_logits, prompt_hidden = mtp.prefill(next_tokens, hidden_all, T, page_table, return_hidden=True)
-        else:
-            mtp_logits, prompt_hidden = mtp.prefill(next_tokens, hidden_all, T, page_table), None
+        next_tokens = torch.cat([token_ids[:, last_cs + 1 : T].to(torch.int32), torch.tensor([[y]], dtype=torch.int32)], dim=1)
+        mtp_out = mtp.prefill(next_tokens, hidden_all, last_n, page_table, chunk_start=last_cs, return_hidden=chained)
+        mtp_logits, prompt_hidden = mtp_out if chained else (mtp_out, None)
         ttnn.deallocate(hidden_all)
         mt = ttnn.to_torch(mtp_logits, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0))
         first_draft = int(torch.argmax(mt.reshape(-1, vocab)[0].float()).item())
+        prompt_s = time.time() - t0
 
         # Persistent step inputs (allocated before any trace; refreshed with host->device copies).
         pos = T
@@ -163,7 +180,7 @@ class MTPDecoder:
         dev_pt = ttnn.to_device(
             ttnn.from_torch(page_table.repeat(R, 1), dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT), device=mesh
         )
-        dev_mtp_tok = ttnn.to_device(_host_u32([y] * R), device=mesh)
+        dev_mtp_tok = ttnn.to_device(self._tokens_host([y] * R), device=mesh)
         if chained:
             dev_sel = ttnn.to_device(_host_u32([0]), device=mesh)
             c_tok, c_pos, c_rope, _ = model.prepare_decode_inputs_host(
@@ -314,7 +331,7 @@ class MTPDecoder:
                     ttnn.execute_trace(mesh, trace_rollback[n], cq_id=0, blocking=False)
                 else:
                     verifier.rollback(n)
-            upd = [_host_u32(ys)] + ([_host_u32([n])] if chained else [])
+            upd = [self._tokens_host(ys)] + ([_host_u32([n])] if chained else [])
             copy_host_to_device(upd, device_tensors=[dev_mtp_tok] + ([dev_sel] if chained else []))
             if use_trace:
                 ttnn.execute_trace(mesh, trace_mtp, cq_id=0, blocking=False)
@@ -351,6 +368,9 @@ class MTPDecoder:
         stats = {
             "k": k,
             "ttft_s": ttft,
+            # Prompt length and the time to the first draft (target prefill + MTP prompt pass).
+            "prompt_tokens": T,
+            "prompt_s": prompt_s,
             "drafts": k * steps,
             "accepted": accepted,
             "acceptance": accepted / (k * steps) if steps else 0.0,

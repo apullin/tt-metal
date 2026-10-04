@@ -112,6 +112,7 @@ class MTPHead:
         self.kv_cache = None
 
     def allocate_kv_cache(self, kv_cache_shape, dtype=ttnn.bfloat16):
+        """dtype: the target's KV dtype (bfloat8_b under QWEN_SDPA_BF8=1, whose attention fills bf8 K/V)."""
         assert self.kv_cache is None
 
         def mk():
@@ -153,16 +154,22 @@ class MTPHead:
     def decode(self, tokens, hidden, cos, sin, cur_pos, page_table, kv_update_idxs, return_hidden=False):
         """MTP rows at positions cur_pos (traceable; same input conventions as TargetVerifier.forward).
 
-        tokens [rows, 1]: x_{i+1} per row; hidden [1, 1, rows, dim]: the target's post-norm h_i, or
+        tokens [rows, 1]: x_{i+1} per row, or with the host embedding table the embedded rows
+        [1, 1, rows, dim/devices] (left intact); hidden [1, 1, rows, dim]: the target's post-norm h_i, or
         for a chained draft the MTP's own output hidden. Returns vocab-sharded logits
         [1, 1, rows, vocab/devices], and with return_hidden also the MTP's output hidden after
         `mtp.norm` [1, 1, rows, dim] (what the LM head reads; the next chained draft's input)."""
         model = self.model
-        e = model.embd(tokens)
-        e = ttnn.reshape(e, (1, 1, e.shape[0] * e.shape[1], e.shape[-1]))
+        embedded = model.host_embedding is not None
+        if embedded:
+            e = tokens
+        else:
+            e = model.embd(tokens)
+            e = ttnn.reshape(e, (1, 1, e.shape[0] * e.shape[1], e.shape[-1]))
         nc = self._decode_norm_config()
         e_n = self.norm_emb(e, mode=Mode.DECODE, norm_config=nc)
-        ttnn.deallocate(e)
+        if not embedded:
+            ttnn.deallocate(e)
         h_sh = ttnn.to_memory_config(hidden, nc["sharded_output_config"])
         h_n = self.norm_hid.norm(h_sh, mode=Mode.DECODE, in_sharded=True, out_sharded=True, norm_config=nc)
         ttnn.deallocate(h_sh)
@@ -182,15 +189,18 @@ class MTPHead:
         ttnn.deallocate(y_n)
         return logits
 
-    def prefill(self, next_tokens, hidden, valid_len, page_table, return_hidden=False):
-        """MTP prompt pass at positions 0..valid_len-1 (eager, one masked bucket).
+    def prefill(self, next_tokens, hidden, valid_len, page_table, chunk_start=0, return_hidden=False, want_logits=True):
+        """MTP prompt pass over one masked prefill chunk at positions chunk_start..chunk_start+valid_len-1
+        (eager). Long prompts call it once per target prefill chunk, in order.
 
-        next_tokens [1, valid_len] torch: x_1..x_T (the prompt shifted by one, ending with the
-        target's first generated token); hidden [1, 1, bucket, dim]: the target's post-norm hidden
-        of every prompt row (Qwen36Model.prefill_hidden); page_table [1, blocks] torch.
-        Fills the MTP KV for positions < valid_len and returns replicated logits [1, 1, vocab] for
-        the last row (the draft for position valid_len + 1), and with return_hidden also that row's
-        output hidden after `mtp.norm` [1, 1, 1, dim] (the first chained draft's input)."""
+        next_tokens [1, valid_len] torch: x_{s+1}..x_{s+valid_len} for chunk start s (the prompt
+        shifted by one; the last chunk ends with the target's first generated token); hidden
+        [1, 1, bucket, dim]: the target's post-norm hidden of every row of the chunk
+        (Qwen36Model.prefill_hidden); page_table [1, blocks] torch.
+        Fills the MTP KV for those positions. With logits=True returns replicated logits [1, 1, vocab]
+        for the chunk's last row (for the last chunk: the draft for the position after the prompt's
+        first generated token), and with return_hidden also that row's output hidden after `mtp.norm`
+        [1, 1, 1, dim] (the first chained draft's input). want_logits=False returns None."""
         model = self.model
         mesh = self.mesh
         rep = ttnn.ReplicateTensorToMesh(mesh)
@@ -198,11 +208,14 @@ class MTPHead:
         assert next_tokens.shape[1] == valid_len <= bucket
         token_buf = torch.zeros(1, bucket, dtype=torch.int32)
         token_buf[:, :valid_len] = next_tokens.to(torch.int32)
-        tok = ttnn.from_torch(token_buf, dtype=ttnn.uint32, device=mesh, mesh_mapper=rep)
-        e = model.embd(tok)
-        ttnn.deallocate(tok)
-        e = ttnn.reshape(e, (1, 1, bucket, e.shape[-1]))
-        e = ttnn.to_memory_config(e, ttnn.DRAM_MEMORY_CONFIG)
+        if model.host_embedding is not None:
+            e = model.host_embedding.device(token_buf.reshape(-1))
+        else:
+            tok = ttnn.from_torch(token_buf, dtype=ttnn.uint32, device=mesh, mesh_mapper=rep)
+            e = model.embd(tok)
+            ttnn.deallocate(tok)
+            e = ttnn.reshape(e, (1, 1, bucket, e.shape[-1]))
+            e = ttnn.to_memory_config(e, ttnn.DRAM_MEMORY_CONFIG)
         e_n = self.norm_emb(e, mode=Mode.PREFILL)
         ttnn.deallocate(e)
         h_frac = ttnn.mesh_partition(hidden, dim=3, cluster_axis=1, memory_config=ttnn.DRAM_MEMORY_CONFIG)
@@ -212,18 +225,19 @@ class MTPHead:
 
         # Same per-chunk attention inputs as Qwen36Model._forward_prefill_chunk_masked_tp.
         block_size = get_block_size(model._paged_kv_caches)
-        cos_t, sin_t = model._rope_tp_cos_sin_torch(0, bucket)
+        cos_t, sin_t = model._rope_tp_cos_sin_torch(chunk_start, bucket)
         cos = ttnn.from_torch(cos_t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=mesh, mesh_mapper=rep)
         sin = ttnn.from_torch(sin_t, dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=mesh, mesh_mapper=rep)
         full_pt = ttnn.from_torch(page_table, dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=mesh)
+        blk0 = chunk_start // block_size
         chunk_pt = ttnn.from_torch(
-            page_table[:, : num_blocks_in_seq(valid_len, block_size)].contiguous(),
+            page_table[:, blk0 : num_blocks_in_seq(chunk_start + valid_len, block_size)].contiguous(),
             dtype=ttnn.int32,
             layout=ttnn.ROW_MAJOR_LAYOUT,
             device=mesh,
         )
         csi = ttnn.from_torch(
-            torch.tensor([0], dtype=torch.int32), dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=mesh
+            torch.tensor([chunk_start], dtype=torch.int32), dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=mesh
         )
         y = self.layer.forward(
             x,
@@ -232,12 +246,15 @@ class MTPHead:
             mode="prefill",
             page_table=full_pt,
             chunk_page_table=chunk_pt,
-            chunk_start_idx=0,
+            chunk_start_idx=chunk_start,
             chunk_start_idx_tensor=csi,
             valid_len=valid_len,
         )
         for t in (x, cos, sin, full_pt, chunk_pt, csi):
             ttnn.deallocate(t)
+        if not want_logits:
+            ttnn.deallocate(y)
+            return None
 
         sel = torch.zeros(1, 1, 1, bucket, dtype=torch.float32)
         sel[0, 0, 0, valid_len - 1] = 1.0

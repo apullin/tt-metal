@@ -15,7 +15,8 @@ as K = rope(k_norm(k_proj(g))), V = v_proj(g) into the drafter's own KV cache at
 
 Block. Rows [anchor, mask x 7] at positions p'..p'+7 (anchor = the last committed token, not yet in
 the target state). Per layer: h = conv_side0(input_norm(x)); q/k/v from h, written to the cache at
-p'..p'+7; attention of every row over cache positions 0..p'+7 (non-causal); out = conv_side1(o_proj);
+p'..p'+7; attention of every row over cache positions max(0, p'+8-W)..p'+7 (non-causal, sliding window W);
+out = conv_side1(o_proj);
 then the same around the MLP. The convs are two-tap causal convolutions within the block:
 out_t = w0_t * h_t + w1_t * h_{t-1} (h_{-1} = 0), with w_{tap,t} = base[side, tap] + per-group
 coefficients from kernel_projection(normed input) (group 16). Final norm -> target LM head.
@@ -34,6 +35,14 @@ Decode KV writes run one paged_update_cache per row (others -1), like the target
 rows of one sequence that share a cache tile race inside one call. One decode call first writes the
 injected context rows (the last verify's 8 rows at p..p+7), then the block rows at p'..p'+7, so
 injected rows past the accepted ones are overwritten by the block before anything reads them.
+
+Sliding window (W = config `sliding_window`, 2048). The paged SDPA decode masks keys before
+cur_pos + 1 - W, with cur_pos = p'+7 for every row (the non-causal block needs every row to see all
+8 block positions). The reference windows each row by its own position (query - key < W), so rows
+0..6 here see up to 7 more of the oldest context entries; that only moves the drafts, never the
+committed text. Since nothing older than W is read, the KV cache is a ring of `kv_ring_blocks`
+blocks: position p lives in slot p mod kv_capacity (update indices are taken modulo it, and the
+SDPA reads through `cache_position_modulo`).
 """
 import json
 from pathlib import Path
@@ -217,9 +226,22 @@ class DFlash2Drafter:
         self.kv = None
 
     # ---- KV cache -------------------------------------------------------------------------------
+    def kv_ring_blocks(self, block_size, max_prefill_rows):
+        """KV blocks of the ring, or None without a sliding window (then the cache needs a block per
+        position block). Nothing aliases inside the window: the oldest entry read is p'+8-W, and the
+        farthest write ahead is a prompt chunk's padding (< max_prefill_rows past the prompt end) or
+        the block (8 rows)."""
+        if not self.sliding_window:
+            return None
+        return -(-(self.sliding_window + max_prefill_rows + 2 * block_size) // block_size)
+
     def allocate_kv_cache(self, num_blocks, block_size):
+        """num_blocks physical blocks used as a ring: position p lives at slot p mod
+        (num_blocks * block_size) (the decode page table is the identity over the blocks, and every
+        update index the caller passes is taken modulo that capacity, `kv_capacity`)."""
         assert self.kv is None
         shape = [num_blocks, self.NKV, block_size, self.HD]
+        self.kv_capacity = num_blocks * block_size
 
         def mk():
             return ttnn.as_tensor(
@@ -232,6 +254,11 @@ class DFlash2Drafter:
             )
 
         self.kv = [(mk(), mk()) for _ in range(self.n_layers)]
+
+    def ring_page_table(self, rows=1):
+        """Identity page table over the ring's blocks, [rows, blocks] torch int32."""
+        blocks = self.kv[0][0].shape[0]
+        return torch.arange(blocks, dtype=torch.int32).reshape(1, blocks).repeat(rows, 1)
 
     def free_kv_cache(self):
         for k, v in self.kv or ():
@@ -335,19 +362,25 @@ class DFlash2Drafter:
         return out
 
     # ---- prompt pass --------------------------------------------------------------------------
-    def prefill(self, taps, page_table):
-        """Write the context K/V for prompt positions 0..rows-1 (one masked bucket, eager).
-        taps: fractured target taps [1, 1, bucket, dim/tp] (Qwen36Model.prefill_taps); rows past the
+    def prefill(self, taps, chunk_start=0):
+        """Write the context K/V for prompt positions chunk_start..chunk_start+rows-1 (one prefill
+        chunk, eager; long prompts call it per chunk, in order, for the chunks inside the window).
+        taps: fractured target taps [1, 1, rows, dim/tp] (Qwen36Model.prefill_taps); rows past the
         prompt carry padding features, written at positions >= the prompt length, which the first
         block overwrites before anything reads them (the next block rewrites p'..p'+7 each step).
-        page_table: torch [1, blocks]."""
+        chunk_start is block-aligned; the chunk's blocks wrap around the ring."""
         S = taps[0].shape[-2]
         g = self._context(taps, Mode.PREFILL)
-        block = self.kv[0][0].shape[2]
+        blocks, block = self.kv[0][0].shape[0], self.kv[0][0].shape[2]
+        assert chunk_start % block == 0, chunk_start
+        blk0 = chunk_start // block
         nblk = (S + block - 1) // block
-        pt = ttnn.from_torch(page_table[:, :nblk].contiguous(), dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=self.mesh)
+        assert nblk <= blocks, f"prefill chunk of {S} rows exceeds the {blocks}-block ring"
+        ring_blocks = torch.tensor([[(blk0 + j) % blocks for j in range(nblk)]], dtype=torch.int32)
+        pt = ttnn.from_torch(ring_blocks, dtype=ttnn.int32, layout=ttnn.ROW_MAJOR_LAYOUT, device=self.mesh)
         inv_freq = 1.0 / (self.theta ** (torch.arange(0, self.HD, 2).float() / self.HD))
-        emb = torch.cat([torch.outer(torch.arange(S, dtype=torch.float32), inv_freq)] * 2, dim=-1)
+        positions = torch.arange(chunk_start, chunk_start + S, dtype=torch.float32)
+        emb = torch.cat([torch.outer(positions, inv_freq)] * 2, dim=-1)
         rep = ttnn.ReplicateTensorToMesh(self.mesh)
         cos = ttnn.from_torch(emb.cos()[None, None].to(torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=self.mesh, mesh_mapper=rep)
         sin = ttnn.from_torch(emb.sin()[None, None].to(torch.bfloat16), dtype=ttnn.bfloat16, layout=ttnn.TILE_LAYOUT, device=self.mesh, mesh_mapper=rep)
@@ -378,7 +411,8 @@ class DFlash2Drafter:
         tokens [R, 1] uint32 = [anchor, mask x (R-1)] (or, with the host embedding table, their
         embedded rows [1, 1, R, dim/tp], left intact); cos/sin [1, R, 1, HD] and upd for the block
         positions p'..p'+R-1; cur_pos [R] int32 = p'+R-1 on every row (non-causal attention over
-        0..p'+R-1); page_table [R, blocks] aliasing the sequence's row.
+        the window ending at p'+R-1); page_table [R, ring blocks] (ring_page_table). Update indices
+        are ring slots: positions modulo kv_capacity.
 
         Returns device tensors (top-k values [1,1,R,k], top-k local indices [1,1,R,k] uint32 per vocab
         shard, selector projection [1,1,R,rank] replicated)."""
@@ -417,7 +451,16 @@ class DFlash2Drafter:
             ttnn.deallocate(k)
             ttnn.deallocate(v)
             attn = ttnn.transformer.paged_scaled_dot_product_attention_decode(
-                q, kv[0], kv[1], page_table_tensor=page_table, cur_pos_tensor=cur_pos, scale=self.scale, program_config=sdpa_cfg, memory_config=_L1
+                q,
+                kv[0],
+                kv[1],
+                page_table_tensor=page_table,
+                cur_pos_tensor=cur_pos,
+                scale=self.scale,
+                sliding_window_size=min(self.sliding_window, self.kv_capacity) if self.sliding_window else None,
+                cache_position_modulo=self.kv_capacity if self.sliding_window else None,
+                program_config=sdpa_cfg,
+                memory_config=_L1,
             )
             ttnn.deallocate(q)
             flat = self._concat_heads(attn, R)
