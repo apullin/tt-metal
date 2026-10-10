@@ -17,6 +17,7 @@ import torch
 from loguru import logger
 
 import ttnn
+from models.common.sampling.tt_sampling import TTSampling
 from models.common.utility_functions import hf_cache_to_legacy, is_blackhole, is_wormhole_b0, nearest_32
 from models.common.weight_cache import WEIGHT_CACHE_FORMAT_VERSION as _WC_FORMAT_VERSION
 from models.common.weight_cache import WEIGHT_CACHE_MARKER as _WC_MARKER
@@ -1219,10 +1220,15 @@ class ModelArgs:
                 "num_workers_per_link": 2,
                 "rs_memory_config": ttnn.DRAM_MEMORY_CONFIG,
             }
+            # The argmax fast path (one all-gather of the full logits + argmax) speeds up
+            # greedy decode on a single chip (P150 ~22 -> ~38 t/s/u). Multi-chip meshes are
+            # faster on the top-k path while each device's vocab shard fits one ttnn.topk;
+            # a shard that has to be cut into chunks (Qwen3 on N300: 2 x 37984) makes
+            # top-k ~19.6 ms against ~3.6 ms for the argmax path.
+            per_device_vocab = self.padded_vocab_size // self.num_devices
+            shard_needs_topk_chunks = (TTSampling.num_per_device_vocab_splits(per_device_vocab) or 1) > 1
             default_sampling_force_argmax = {
-                # Single-chip only: the argmax fast-path speeds up greedy decode on P150
-                # (~22 -> ~38 t/s/u), but multi-chip meshes are faster on the top-k path.
-                "allow_force_argmax": self.num_devices == 1,
+                "allow_force_argmax": self.num_devices == 1 or shard_needs_topk_chunks,
                 "num_links": 1,
                 "chunks_per_sync": 10,
                 "num_workers_per_link": 2,

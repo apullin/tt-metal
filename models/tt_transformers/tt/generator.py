@@ -190,6 +190,14 @@ class Generator(ModelCapabilitiesMixin, WarmupForwardMixin):
         # The eager warmup phase stages decode I/O as well as programs. Keep it
         # until the capture phase, which may follow prefill trace recording.
         self._prepared_decode_traces = {}
+        # Device top-k over a vocab shard cut into chunks (e.g. Qwen3 on N300) is much slower
+        # than host sampling, while greedy rows still take the argmax fast path. The vLLM TT
+        # plugin reads max_device_top_k from the instance per batch, so 0 routes every sampled
+        # row to host sampling and leaves greedy rows on the device.
+        if "max_device_top_k" in type(self).model_capabilities and any(
+            getattr(m, "sampling", None) is not None and m.sampling.tt_sampling.chunks_device_topk for m in self.model
+        ):
+            self.model_capabilities = {**type(self).model_capabilities, "max_device_top_k": 0}
 
     # Class-level capabilities (VLLM specific, to be overridden by subclasses).
     # A subclass dict replaces this one rather than merging into it, so a default

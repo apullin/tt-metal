@@ -1234,6 +1234,19 @@ def test_num_single_device_vocab_splits(padded_vocab_size, expected_splits):
 
 
 @pytest.mark.parametrize(
+    "per_device_width, expected_splits",
+    [
+        (64128, 1),  # Llama-3 on two devices: the shard already fits ttnn.topk
+        (65536, 1),  # exactly TOPK_MAX_WIDTH
+        (75968, 2),  # Qwen3 on two devices: two 37984-wide chunks
+        (128000, 2),  # Gemma-2 on two devices: two 64000-wide chunks
+        (65552, None),  # two 32776-wide chunks are not tile-aligned -> host-sampling fallback
+    ],
+)
+def test_num_per_device_vocab_splits(per_device_width, expected_splits):
+    assert TTSampling.num_per_device_vocab_splits(per_device_width) == expected_splits
+
+@pytest.mark.parametrize(
     "width, expected",
     [
         (32768, 1),
@@ -1439,6 +1452,69 @@ def test_ttsampling_topk_matches_argmax_on_single_device(vocab_size, mesh_device
 
     header = f"{len(failures)}/{batch_size} users did not sample the row maximum (vocab_size={vocab_size})"
     assert not failures, header + ":\n" + "\n".join(failures)
+
+
+@pytest.mark.parametrize(
+    "vocab_size, expected_splits",
+    [
+        pytest.param(128256, 1, id="v128256_shards_fit"),  # Llama-3: 64128 per device
+        pytest.param(151936, 2, id="v151936_two_chunk_shards"),  # Qwen3: 75968 per device
+    ],
+)
+@pytest.mark.parametrize("mesh_device", [(1, 2)], indirect=True)
+@pytest.mark.parametrize("device_params", [{"fabric_config": ttnn.FabricConfig.FABRIC_1D}], indirect=True)
+def test_ttsampling_uses_global_indices_on_two_device_mesh(vocab_size, expected_splits, mesh_device):
+    """Greedy and top-32 draws over a vocab sharded across two devices must return global token ids.
+
+    A device shard wider than ttnn.topk's limit is cut into chunks whose local indices are offset
+    after the cross-device gather; a wrong offset returns a token from the wrong part of the vocab.
+    Each user's hot tokens sit on both sides of a different chunk or device boundary.
+    """
+    torch.manual_seed(42)
+    batch_size = 32
+    args = _single_device_sampling_args(mesh_device, vocab_size)
+    args.cluster_shape = tuple(mesh_device.shape)
+
+    chunk_width = vocab_size // (mesh_device.get_num_devices() * expected_splits)
+    boundaries = [token for start in range(0, vocab_size, chunk_width) for token in (start, start + chunk_width - 1)]
+    logits_host = torch.randn(1, 1, batch_size, vocab_size)
+    hot_tokens = []
+    for user in range(batch_size):
+        # Three hot tokens per user, far above the N(0, 1) noise: the greedy pick and two runners-up.
+        tokens = [boundaries[(user + i) % len(boundaries)] for i in range(3)]
+        for rank, token in enumerate(tokens):
+            logits_host[0, 0, user, token] = 30.0 - rank
+        hot_tokens.append(tokens)
+    logits_tt = ttnn.from_torch(
+        logits_host,
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh_device,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=3),
+    )
+
+    def draw(k, temp):
+        sampler = TTSampling(
+            args=args,
+            mesh_device=mesh_device,
+            tt_ccl=None,
+            k=torch.full((batch_size,), k),
+            p=torch.ones(batch_size),
+            temp=torch.full((batch_size,), temp),
+        )
+        assert not sampler.multi_step_reduction
+        assert sampler._num_vocab_splits == expected_splits
+        tokens_tt, _log_probs = sampler(logits_tt)
+        return ttnn.to_torch(ttnn.get_device_tensors(tokens_tt)[0]).flatten()[:batch_size].long().tolist()
+
+    greedy = draw(k=1, temp=1.0)
+    assert greedy == [tokens[0] for tokens in hot_tokens]
+
+    # Inverse temperature 0.5 turns the hot logits 30/29/28 into 15/14.5/14, so the draw spreads
+    # across them while the noise keeps negligible mass; every sampled id must be a hot token.
+    sampled = draw(k=32, temp=0.5)
+    wrong = [(user, token) for user, token in enumerate(sampled) if token not in hot_tokens[user]]
+    assert not wrong, f"tokens outside each user's hot set (user, token): {wrong}"
 
 
 @pytest.mark.parametrize("mesh_device", [(1, 1)], indirect=True)

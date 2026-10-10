@@ -92,6 +92,22 @@ class TTSampling(LightweightModule):
             return None
         return num_splits
 
+    @classmethod
+    def num_per_device_vocab_splits(cls, per_device_width):
+        """Fewest power-of-two chunks of one device's vocab shard whose width fits ttnn.topk.
+
+        Returns 1 when the shard already fits, and None when no tile-aligned cut exists, in
+        which case the caller must fall back to host sampling instead of constructing TTSampling.
+        Qwen3's 151936-token vocab on a two-device mesh is 75968 per device, so it takes 2.
+        """
+        num_splits = 1
+        while per_device_width // num_splits > TOPK_MAX_WIDTH:
+            num_splits *= 2
+        chunk_width = per_device_width // num_splits
+        if per_device_width % num_splits != 0 or chunk_width % ttnn.TILE_SIZE != 0:
+            return None
+        return num_splits
+
     @staticmethod
     def _untilize_chunk_count(width):
         """Fewest tile-aligned chunks of at most TOPK_MAX_WIDTH each, or 1 when
@@ -179,6 +195,11 @@ class TTSampling(LightweightModule):
         temp = torch.where(temp == 0.0, torch.ones_like(temp), temp)
         return k, temp
 
+    @property
+    def chunks_device_topk(self) -> bool:
+        """True when a multi-device mesh cuts each device's vocab shard into several top-k chunks."""
+        return not self.multi_step_reduction and self._num_vocab_splits > 1
+
     def __init__(
         self,
         mesh_device,
@@ -239,6 +260,16 @@ class TTSampling(LightweightModule):
         self.cluster_shape = args.cluster_shape
 
         self.sampling_all_gather_axis = getattr(args, "sampling_all_gather_axis", 0)
+        if not self.multi_step_reduction:
+            # A device's vocab shard wider than ttnn.topk's limit is cut into same-device chunks
+            # too; their top-ks are concatenated before the cross-device gather.
+            per_device_width = self.padded_vocab_size // self._num_vocab_shard_devices()
+            self._num_vocab_splits = self.num_per_device_vocab_splits(per_device_width)
+            if self._num_vocab_splits is None:
+                raise ValueError(
+                    f"per-device vocab width {per_device_width} cannot be cut into tile-aligned "
+                    f"top-k chunks of at most {TOPK_MAX_WIDTH}"
+                )
         self.sub_core_grids = getattr(args, "sub_core_grids", None)
         self.sub_core_grid_topk = getattr(args, "sub_core_grid_topk", None)
         self.start_core = getattr(args, "start_core", ttnn.CoreCoord(0, 0))
@@ -396,9 +427,8 @@ class TTSampling(LightweightModule):
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
         )
 
-    def _get_num_sampling_shards(self):
-        if self.multi_step_reduction:
-            return self._num_vocab_splits
+    def _num_vocab_shard_devices(self):
+        """Devices the vocab is sharded across (the sampling all-gather axis)."""
         if 1 in self.cluster_shape:
             return max(self.cluster_shape[0], self.cluster_shape[1])
 
@@ -407,6 +437,12 @@ class TTSampling(LightweightModule):
                 f"sampling_all_gather_axis must be 0 or 1 for 2D meshes, got {self.sampling_all_gather_axis}"
             )
         return self.cluster_shape[self.sampling_all_gather_axis]
+
+    def _get_num_sampling_shards(self):
+        """Top-k blocks in the gathered candidate row: vocab chunks per device times devices."""
+        if self.multi_step_reduction:
+            return self._num_vocab_splits
+        return self._num_vocab_shard_devices() * self._num_vocab_splits
 
     def _create_indices_tensors(self):
         """Create the per-shard index offsets added to the top-k indices after the gather."""
@@ -824,6 +860,57 @@ class TTSampling(LightweightModule):
             x_untilized = ttnn.untilize(x, use_multicore=True, sub_core_grids=self._force_argmax_sub_core_grids)
         return x_untilized
 
+    def _chunked_local_topk(self, x_bf16):
+        """ttnn.topk over `_num_vocab_splits` equal same-device chunks of the local vocab row.
+
+        Returns the concatenated top-k values and chunk-local indices; the per-chunk index
+        offsets (`tt_indices_device_offsets`) are added after the cross-device gather.
+        """
+        x_bf16_list = ttnn.split(x_bf16, x_bf16.shape[-1] // self._num_vocab_splits, dim=3)
+        topk_values_list = []
+        topk_indices_list = []
+
+        # Drop stable=True ONLY when the authoritative C++ route query says
+        # ttnn.topk will take the Blackhole topk_large_indices composite for
+        # these chunks once the custom arguments are absent.
+        # Sampling opts out of stable topk for decode perf (_topk_stable is
+        # False): these chunks route to the single-core factory,
+        # where stable pays ~2-3x on the SFPU sort stage.
+        # _adjust_values_for_tiebreak is what guarantees the greedy
+        # pick after the gather, regardless of per-device tie order. Calls
+        # that would not route keep today's arguments bit-for-bit, and a
+        # call the model constrained to a sub-grid is never relaxed.
+        use_routed_topk = self.sub_core_grid_topk is None and topk_would_route_to_large_indices(
+            x_bf16_list[0], self.max_top_k
+        )
+
+        for i in range(len(x_bf16_list)):
+            # Chunks are not padded to a power of two here: an A/B on this path
+            # (PR #53167) measured no end-to-end decode benefit from steering
+            # ttnn.topk to the multi-core factory, so single-core chunks stay.
+            topk_values, topk_indices = ttnn.topk(
+                x_bf16_list[i],
+                k=self.max_top_k,
+                dim=-1,
+                sub_core_grids=self.sub_core_grid_topk,
+                # _topk_stable is False: the fast unstable network is used and
+                # _adjust_values_for_tiebreak guarantees the greedy pick. The routed-topk
+                # relax (unstable where the call would take the BH topk_large_indices
+                # composite) is kept so re-enabling stable stays a one-line change.
+                stable=False if use_routed_topk else self._topk_stable,
+            )
+            topk_values_list.append(topk_values)
+            topk_indices_list.append(topk_indices)
+            x_bf16_list[i].deallocate()
+
+        topk_values_concat = ttnn.concat(topk_values_list, dim=3)
+        topk_indices_concat = ttnn.concat(topk_indices_list, dim=3)
+
+        for i in range(len(topk_indices_list)):
+            ttnn.deallocate(topk_values_list[i])
+            ttnn.deallocate(topk_indices_list[i])
+        return topk_values_concat, topk_indices_concat
+
     def forward(
         self,
         x: ttnn.Tensor,
@@ -967,30 +1054,39 @@ class TTSampling(LightweightModule):
                 stable=False,
             )
         elif self.multi_step_reduction:
-            x_bf16_list = ttnn.split(x_bf16, x_bf16.shape[-1] // self._num_vocab_splits, dim=3)
-            topk_values_list = []
-            topk_indices_list = []
+            topk_values_gathered_bf16_interleaved, topk_indices_gathered = self._chunked_local_topk(x_bf16)
 
-            # Drop stable=True ONLY when the authoritative C++ route query says
-            # ttnn.topk will take the Blackhole topk_large_indices composite for
-            # these halves once the custom arguments are absent.
-            # Sampling opts out of stable topk for decode perf (_topk_stable is
-            # False): these chunks route to the single-core factory,
-            # where stable pays ~2-3x on the SFPU sort stage.
-            # _adjust_values_for_tiebreak is what guarantees the greedy
-            # pick after the gather, regardless of per-device tie order. Calls
-            # that would not route keep today's arguments bit-for-bit, and a
-            # call the model constrained to a sub-grid is never relaxed.
-            use_routed_topk = self.sub_core_grid_topk is None and topk_would_route_to_large_indices(
-                x_bf16_list[0], self.max_top_k
-            )
-
-            for i in range(len(x_bf16_list)):
-                # Chunks are not padded to a power of two here: an A/B on this path
-                # (PR #53167) measured no end-to-end decode benefit from steering
-                # ttnn.topk to the multi-core factory, so single-core chunks stay.
+        else:
+            if self._num_vocab_splits > 1:
+                # This device's vocab shard is wider than ttnn.topk accepts (e.g. Qwen3 on a
+                # two-device mesh): take the top-k of each same-device chunk.
+                topk_values, topk_indices = self._chunked_local_topk(x_bf16)
+            else:
+                # apply padding to the input tensor if needed
+                # if number is not power of 2, pad to upper power of 2
+                # pad only last dimension with float::min value to upper_power_of_2
+                # This is necessary to use full optimization in the topk operation.
+                if self.pad_to_power_of_2 and not is_power_of_2(x_bf16.shape[-1]):
+                    padded_value = upper_power_of_2(x_bf16.shape[-1])
+                    x_bf16 = ttnn.pad(
+                        x_bf16,
+                        [(0, 0), (0, 0), (0, 0), (0, padded_value - x_bf16.shape[-1])],
+                        value=-sys.float_info.max,
+                        sub_core_grids=self.sub_core_grids,
+                    )
+                # Perform local top-k on each device. Drop stable=True ONLY when the
+                # authoritative C++ route query says the relaxed call will take the
+                # Blackhole topk_large_indices composite -- sampling keeps every call
+                # unstable (_topk_stable is False): this multicore-eligible call would
+                # usually get the ~free fused-key stable engine, but the greedy
+                # guarantee must hold on ALL routes (see _topk_stable), and
+                # _adjust_values_for_tiebreak already provides it host-side.
+                # Sub-grid-constrained calls never relax.
+                use_routed_topk = self.sub_core_grid_topk is None and topk_would_route_to_large_indices(
+                    x_bf16, self.max_top_k
+                )
                 topk_values, topk_indices = ttnn.topk(
-                    x_bf16_list[i],
+                    x_bf16,
                     k=self.max_top_k,
                     dim=-1,
                     sub_core_grids=self.sub_core_grid_topk,
@@ -1000,52 +1096,6 @@ class TTSampling(LightweightModule):
                     # composite) is kept so re-enabling stable stays a one-line change.
                     stable=False if use_routed_topk else self._topk_stable,
                 )
-                topk_values_list.append(topk_values)
-                topk_indices_list.append(topk_indices)
-                x_bf16_list[i].deallocate()
-
-            topk_values_gathered_bf16_interleaved = ttnn.concat(topk_values_list, dim=3)
-            topk_indices_gathered = ttnn.concat(topk_indices_list, dim=3)
-
-            for i in range(len(topk_indices_list)):
-                ttnn.deallocate(topk_values_list[i])
-                ttnn.deallocate(topk_indices_list[i])
-
-        else:
-            # apply padding to the input tensor if needed
-            # if number is not power of 2, pad to upper power of 2
-            # pad only last dimension with float::min value to upper_power_of_2
-            # This is necessary to use full optimization in the topk operation.
-            if self.pad_to_power_of_2 and not is_power_of_2(x_bf16.shape[-1]):
-                padded_value = upper_power_of_2(x_bf16.shape[-1])
-                x_bf16 = ttnn.pad(
-                    x_bf16,
-                    [(0, 0), (0, 0), (0, 0), (0, padded_value - x_bf16.shape[-1])],
-                    value=-sys.float_info.max,
-                    sub_core_grids=self.sub_core_grids,
-                )
-            # Perform local top-k on each device. Drop stable=True ONLY when the
-            # authoritative C++ route query says the relaxed call will take the
-            # Blackhole topk_large_indices composite -- sampling keeps every call
-            # unstable (_topk_stable is False): this multicore-eligible call would
-            # usually get the ~free fused-key stable engine, but the greedy
-            # guarantee must hold on ALL routes (see _topk_stable), and
-            # _adjust_values_for_tiebreak already provides it host-side.
-            # Sub-grid-constrained calls never relax.
-            use_routed_topk = self.sub_core_grid_topk is None and topk_would_route_to_large_indices(
-                x_bf16, self.max_top_k
-            )
-            topk_values, topk_indices = ttnn.topk(
-                x_bf16,
-                k=self.max_top_k,
-                dim=-1,
-                sub_core_grids=self.sub_core_grid_topk,
-                # _topk_stable is False: the fast unstable network is used and
-                # _adjust_values_for_tiebreak guarantees the greedy pick. The routed-topk
-                # relax (unstable where the call would take the BH topk_large_indices
-                # composite) is kept so re-enabling stable stays a one-line change.
-                stable=False if use_routed_topk else self._topk_stable,
-            )
 
             # For 1D meshes use `cluster_axis=None`. For 2D meshes, use the configured gather axis.
             sampling_cluster_axis = self._get_sampling_cluster_axis()

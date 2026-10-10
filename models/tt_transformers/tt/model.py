@@ -12,7 +12,7 @@ import ttnn
 from models.common.lightweightmodule import LightweightModule
 from models.common.rmsnorm import RMSNorm
 from models.common.sampling.generator import SamplingGenerator
-from models.common.sampling.tt_sampling import TOPK_MAX_WIDTH, TTSampling
+from models.common.sampling.tt_sampling import TTSampling
 from models.tt_transformers.tt.ccl import TT_CCL
 from models.tt_transformers.tt.common import Mode, copy_host_to_device
 from models.tt_transformers.tt.decoder import TransformerBlock
@@ -269,13 +269,15 @@ class Transformer(LightweightModule):
         )
 
         # Initialize on-device sampling if supported
-        # Sampling on device is supported only if each device holds at most TOPK_MAX_WIDTH logits.
-        # On a single device TTSampling cuts the padded vocab into as many same-device chunks as
-        # needed (power-of-two, each <= TOPK_MAX_WIDTH), so any vocab it can cut tile-aligned is
-        # supported (#53064); anything it cannot falls back to host sampling.
+        # TTSampling cuts each device's vocab shard into as many same-device chunks as needed
+        # (power-of-two, each <= TOPK_MAX_WIDTH), so any shard it can cut tile-aligned is
+        # supported -- on a single device the whole vocab (#53064), on a multi-device mesh each
+        # device's slice (e.g. Qwen3 on N300); anything it cannot falls back to host sampling.
         padded_vocab_size = getattr(self.args, "padded_vocab_size", None) or self.args.vocab_size
         if list(self.mesh_device.shape) != [1, 1]:
-            vocab_fits_on_device = padded_vocab_size // self.args.num_devices <= TOPK_MAX_WIDTH
+            vocab_fits_on_device = (
+                TTSampling.num_per_device_vocab_splits(padded_vocab_size // self.args.num_devices) is not None
+            )
         else:
             vocab_fits_on_device = TTSampling.num_single_device_vocab_splits(padded_vocab_size) is not None
         self._supports_on_device_sampling = prefetcher is None and vocab_fits_on_device
