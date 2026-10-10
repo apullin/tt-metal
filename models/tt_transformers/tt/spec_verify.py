@@ -354,7 +354,11 @@ class SpecVerifyMixin:
             n = int(num_valid[b])
             ids[b, : n + 1] = row_ids[b * width : b * width + n + 1].to(torch.int32)
         self._apply_sampling_slot_remap(slot_remap)
-        return VerifyOutput(spec_mode=spec_mode, argmax_ids=ids, hidden=None)
+        return VerifyOutput(spec_mode=spec_mode, argmax_ids=ids, hidden=self._verify_hidden())
+
+    def _verify_hidden(self):
+        """The handle a verify hands the drafter; host proposers need none."""
+        return None
 
     def _enter_decode_mode(self):
         if self.mode != Mode.DECODE:
