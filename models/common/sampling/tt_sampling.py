@@ -911,6 +911,86 @@ class TTSampling(LightweightModule):
             ttnn.deallocate(topk_indices_list[i])
         return topk_values_concat, topk_indices_concat
 
+    def argmax(self, x: ttnn.Tensor, output_tensor: ttnn.Tensor = None) -> ttnn.Tensor:
+        """Greedy token per row of vocab-sharded logits, the force-argmax path's ops.
+
+        Gathers the shards, trims or masks the padded vocab, untilizes and takes the
+        argmax; returns uint32 ids, one per logits row (written to ``output_tensor``
+        when given). Speculative verification calls this on a wide decode's logits
+        so its rows pick exactly what a greedy decode step picks.
+        """
+        # BH galaxy prefetcher (unfused-CCL) keeps a split senders/worker sub-device manager
+        # loaded during decode. The vocab-trim ttnn.slice auto-grids a 32-core block from origin
+        # (0,0) on the DRAM-interleaved path (it does not honor sub_core_grids there) and spills
+        # into the uncovered senders-column tail -> "kernel group cores do not match sub device
+        # cores". Skip that slice here. Still apply the full-width additive invalid-vocab mask
+        # (already selected whenever sub_core_grids is set; one elementwise add, no slice/concat)
+        # so a 0-padded logit cannot win argmax when every valid logit is negative. untilize/
+        # argmax stay pinned to the worker sub-core grid via _force_argmax_sub_core_grids.
+        force_argmax_skip_vocab_trim = self._force_argmax_sub_core_grids is not None
+        slice_valid_vocab = self._can_slice_valid_vocab_for_argmax() and not force_argmax_skip_vocab_trim
+        if not slice_valid_vocab:
+            x = self._mask_invalid_vocab_logits(x)
+        # Gather the output across all devices and untilize the tensor (for argmax)
+        num_devices = self.mesh_device.get_num_devices()
+        if num_devices > 1:
+            cluster_axis = self._get_sampling_cluster_axis()
+            num_links, topology = self._get_force_argmax_all_gather_config(cluster_axis)
+            logger.debug(
+                f"Force argmax sampling all-gather: cluster_axis={cluster_axis}, "
+                f"num_links={num_links}, topology={topology}"
+            )
+            # NOTE: do NOT pass a persistent_output_buffer here. The all_gather_async factory
+            # disables its barrier semaphore when persistent buffers are used, and the barrier
+            # is what bounds cross-invocation skew: without it a fast device's next-invocation
+            # writes/increments can reach a peer before that peer's reader has reset its
+            # out_ready semaphore, leaving residual counts that make later waits pass early
+            # (argmax then reads the previous step's logits). Under trace the fresh output
+            # allocation is frozen at capture, so the address is stable anyway.
+            barrier_accessor = getattr(
+                self.tt_ccl,
+                "get_sampling_barrier_semaphore_handle",
+                self.tt_ccl.get_and_cycle_barrier_semaphore_handle,
+            )
+            # Pin the gather to the worker sub-device only on the BH unfused path, where the
+            # downstream untilize/argmax are themselves confined via _force_argmax_sub_core_grids.
+            # Without this, all_gather_async defaults to sub-device 0 (prefetcher/senders under
+            # the galaxy decode manager). Dispatch only serializes within a sub-device, so a
+            # gather on 0 races the worker-grid untilize and under trace replay returns the
+            # previous step's tokens. Eager mode masks this via host dispatch latency.
+            # Left unpinned on Wormhole: untilize/argmax are not sub-core-grid confined there
+            # and still use the default sub-device 0, matching pre-existing WH behaviour.
+            ag_sub_device_id = (
+                getattr(self.tt_ccl, "worker_sub_device_id", None)
+                if self._force_argmax_sub_core_grids is not None
+                else None
+            )
+            x = ttnn.experimental.all_gather_async(
+                x,
+                persistent_output_buffer=None,
+                dim=3,
+                multi_device_global_semaphore=self.tt_ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
+                num_links=num_links,
+                memory_config=x.memory_config(),
+                cluster_axis=cluster_axis,
+                topology=topology,
+                barrier_semaphore=barrier_accessor(cluster_axis),
+                chunks_per_sync=self.argmax_chunks_per_sync,
+                num_workers_per_link=self.argmax_num_workers_per_link,
+                num_buffers_per_channel=2,
+                subdevice_id=ag_sub_device_id,
+            )
+        if slice_valid_vocab:
+            x = self._slice_valid_vocab_for_argmax(x)
+        x_untilized = self._untilize_for_argmax(x)
+        return ttnn.argmax(
+            x_untilized,
+            dim=-1,
+            output_tensor=output_tensor,
+            keepdim=False,
+            sub_core_grids=self._force_argmax_sub_core_grids,
+        )
+
     def forward(
         self,
         x: ttnn.Tensor,
@@ -935,77 +1015,7 @@ class TTSampling(LightweightModule):
             # Logprobs consume the original vocabulary shards, before argmax's
             # gather/slice. Keep token selection identical when reporting toggles.
             logits_for_log_probs = x
-            # BH galaxy prefetcher (unfused-CCL) keeps a split senders/worker sub-device manager
-            # loaded during decode. The vocab-trim ttnn.slice auto-grids a 32-core block from origin
-            # (0,0) on the DRAM-interleaved path (it does not honor sub_core_grids there) and spills
-            # into the uncovered senders-column tail -> "kernel group cores do not match sub device
-            # cores". Skip that slice here. Still apply the full-width additive invalid-vocab mask
-            # (already selected whenever sub_core_grids is set; one elementwise add, no slice/concat)
-            # so a 0-padded logit cannot win argmax when every valid logit is negative. untilize/
-            # argmax stay pinned to the worker sub-core grid via _force_argmax_sub_core_grids.
-            force_argmax_skip_vocab_trim = self._force_argmax_sub_core_grids is not None
-            slice_valid_vocab = self._can_slice_valid_vocab_for_argmax() and not force_argmax_skip_vocab_trim
-            if not slice_valid_vocab:
-                x = self._mask_invalid_vocab_logits(x)
-            # Gather the output across all devices and untilize the tensor (for argmax)
-            num_devices = self.mesh_device.get_num_devices()
-            if num_devices > 1:
-                cluster_axis = self._get_sampling_cluster_axis()
-                num_links, topology = self._get_force_argmax_all_gather_config(cluster_axis)
-                logger.debug(
-                    f"Force argmax sampling all-gather: cluster_axis={cluster_axis}, "
-                    f"num_links={num_links}, topology={topology}"
-                )
-                # NOTE: do NOT pass a persistent_output_buffer here. The all_gather_async factory
-                # disables its barrier semaphore when persistent buffers are used, and the barrier
-                # is what bounds cross-invocation skew: without it a fast device's next-invocation
-                # writes/increments can reach a peer before that peer's reader has reset its
-                # out_ready semaphore, leaving residual counts that make later waits pass early
-                # (argmax then reads the previous step's logits). Under trace the fresh output
-                # allocation is frozen at capture, so the address is stable anyway.
-                barrier_accessor = getattr(
-                    self.tt_ccl,
-                    "get_sampling_barrier_semaphore_handle",
-                    self.tt_ccl.get_and_cycle_barrier_semaphore_handle,
-                )
-                # Pin the gather to the worker sub-device only on the BH unfused path, where the
-                # downstream untilize/argmax are themselves confined via _force_argmax_sub_core_grids.
-                # Without this, all_gather_async defaults to sub-device 0 (prefetcher/senders under
-                # the galaxy decode manager). Dispatch only serializes within a sub-device, so a
-                # gather on 0 races the worker-grid untilize and under trace replay returns the
-                # previous step's tokens. Eager mode masks this via host dispatch latency.
-                # Left unpinned on Wormhole: untilize/argmax are not sub-core-grid confined there
-                # and still use the default sub-device 0, matching pre-existing WH behaviour.
-                ag_sub_device_id = (
-                    getattr(self.tt_ccl, "worker_sub_device_id", None)
-                    if self._force_argmax_sub_core_grids is not None
-                    else None
-                )
-                x = ttnn.experimental.all_gather_async(
-                    x,
-                    persistent_output_buffer=None,
-                    dim=3,
-                    multi_device_global_semaphore=self.tt_ccl.get_and_cycle_ag_semaphore_handles(cluster_axis),
-                    num_links=num_links,
-                    memory_config=x.memory_config(),
-                    cluster_axis=cluster_axis,
-                    topology=topology,
-                    barrier_semaphore=barrier_accessor(cluster_axis),
-                    chunks_per_sync=self.argmax_chunks_per_sync,
-                    num_workers_per_link=self.argmax_num_workers_per_link,
-                    num_buffers_per_channel=2,
-                    subdevice_id=ag_sub_device_id,
-                )
-            if slice_valid_vocab:
-                x = self._slice_valid_vocab_for_argmax(x)
-            x_untilized = self._untilize_for_argmax(x)
-            tt_out_tok = ttnn.argmax(
-                x_untilized,
-                dim=-1,
-                output_tensor=tt_out_tok,
-                keepdim=False,
-                sub_core_grids=self._force_argmax_sub_core_grids,
-            )
+            tt_out_tok = self.argmax(x, output_tensor=tt_out_tok)
             if self.log_probs_calculator.enable_log_probs:
                 # argmax drops the final axis; the calculator takes the ordinary
                 # sampler's [1,1,1,B] ROW_MAJOR index layout.
