@@ -7,6 +7,7 @@
 #include "paged_update_cache_device_operation.hpp"
 #include "paged_update_cache_device_operation_types.hpp"
 
+#include <cstdlib>
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/host_api.hpp>
@@ -209,7 +210,8 @@ ttnn::device_operation::ProgramArtifacts build_paged_update_cache_artifacts(
 
     uint32_t num_cache_tiles = 2 * Wt;   // double buffered
     uint32_t num_interm_tiles = 2 * Wt;  // double buffered
-    uint32_t num_output_tiles = B * Wt;
+    const bool compact_output_cb = std::getenv("TTNN_PAGED_UPDATE_CACHE_COMPACT_OUTPUT_CB") != nullptr;
+    uint32_t num_output_tiles = compact_output_cb ? Wt : B * Wt;
 
     // cache_position_modulo: 0 = disabled (legacy), nonzero = wrap update_idx mod this
     // value before page_table lookup. Required when the caller's page_table is sized for
